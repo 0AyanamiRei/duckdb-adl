@@ -33,3 +33,24 @@ test/sql/join/full_outer/test_full_outer_join.test
 build/debug/test/unittest -f test.list
 ```
 
+## Summary of the optimizers in DuckDB
+
+1. ***rewrite rules***
+2. Filter Pull-Up & Filter Pushdown， 谓词上推也有一定作用，比如下面的sql：
+
+```sql
+SELECT *
+FROM t1, t2
+WHERE t1.a = t2.a
+  AND t1.a = 50;
+```
+
+可以把`t1.a = 50`这个谓词通过 `t1.a = t2.a`传播到表t2上:
+
+```sql
+SELECT *
+FROM t1, t2
+WHERE t1.a = t2.a
+  AND t1.a = 50;
+  AND t2.a = 50;
+```
