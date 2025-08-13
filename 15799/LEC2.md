@@ -71,8 +71,8 @@ Starburst中的每个表(包括子查询生成的临时表)都具有三种类型
 1. Subquery to Join Transformation
 2. Set Operator to Subquery Conversion
 3. view merge
+4. Subquery Merge
 4. Magic Sets Transformation
-4. 
 
 ***rule2 in duckdb***
 
@@ -88,6 +88,10 @@ HASH_GROUP_BY
 ***rule3 in duckdb***
 
 ```sql
+PRAGMA explain_output = 'physical_only';
+PRAGMA explain_output = 'optimized_only';
+PRAGMA explain_output = 'all';
+
 CREATE VIEW itpv AS
 (
     SELECT DISTINCT itp.itemn, pur.vendn
@@ -107,17 +111,4 @@ PROJECTION(itmn, vendn)
         └── HASH_JOIN (itp ⋈ pur)
             ├── SEQ_SCAN(itp)
             └── SEQ_SCAN(pur) with filter
-```
-
-***rule4 in duckdb***
-
-```sql
-
-
-```
-
-```sql
-PRAGMA explain_output = 'physical_only';
-PRAGMA explain_output = 'optimized_only';
-PRAGMA explain_output = 'all';
 ```
