@@ -176,20 +176,93 @@ Cascades中的Search被细分为更细粒度的单元，称为task，以使搜�
   3. 调度OptExpr
   4. 调度ExplGrp用来生成输入表达式的等价逻辑表达式
 
+```c++
+OptGrp(expr, limit) {
+  auto group = GetGroup(expr);
+  if (!group.Explored) {
+    tasks.push(OptGrp(group, limit));
+    tasks.push(ExplGrp(group, limit));
+  } else {
+    for(auto expr : group.Expressions) {
+      tasks.push(OptExpr(expr, limit));
+    }
+  }
+}
+```
+
 ***2 OptExpr***
 
 - 功能：
 - 调度与被调
+
+```c++
+OptExpr(expr, limit) {
+  vector<Move> moves;
+  // 和ExplExpr的不同在检查的Rules
+  for (auto rule : Rules) {
+    if (!expr.IsApplied(rule) && rule.CheckPattern(expr)) {
+      moves.push_back(ApplyRule(expr, rule, promise, limit));
+    }
+  }
+
+  SortByPromise(moves);
+  for (auto m : moves) {
+    tasks.push(m);
+  }
+  // ?: ---是否等待tasks中的move被实际apply?
+  // ans: 推入tasks中的顺序就代表了apply的先后关系
+  for (auto childExpr : expr.GetInput()) {
+    auto group = GetGroup(childExpr);
+    if (!group.Explored) {
+      tasks.push(ExplGrp(group, limit));
+    }
+  }
+}
+```
 
 ***3 ExplGrp***
 
 - 功能：
 - 调度与被调
 
+```c++
+ExplGrp(group, limit) {
+  group.Explored = true;
+  for(auto expr : group.Expressions) {
+    tasks.push(ExplExpr(expr, limit));
+  }
+}
+```
+
 ***4 ExplExpr***
 
 - 功能：
 - 调度与被调
+
+```c++
+auto ExplExpr(expr, limit) -> ? {
+  // 在探索表达式时，优化器会检查尚未应用于该表达式的全部转换规则
+  // 并将每个规则的模式与表达式进行匹配
+  vector<Move> moves;
+  for (auto rule : Transformation) {
+    if (!expr.IsApplied(rule) && rule.CheckPattern(expr)) {
+      moves.push_back(ApplyRule(expr, rule, promise, limit));
+    }
+  }
+
+  SortByPromise(moves);
+  for (auto m : moves) {
+    tasks.push(m);
+  }
+
+  for (auto childExpr : expr.GetInput()) {
+    auto group = GetGroup(childExpr);
+    if (!group.Explored) {
+      tasks.push(ExplGrp(group, limit));
+    }
+  }
+}
+```
 
 ***5 ApplyRule***
 
@@ -198,7 +271,67 @@ Cascades中的Search被细分为更细粒度的单元，称为task，以使搜�
   1. OptExpr和ExplExpr都会调度该task，区别在于传入的rule类型
   2. 
 
+```c++
+auto ApplyRule(expr, rule, promise, limit) -> ? {
+  // why exprs: 模式匹配可能在epxr中多次匹配成功
+  auto newExprs = Transform(expr, rule);
+  UpdateMemo(newExprs);
+  SortByPromise(newExprs, promise);
+  for (auto newExpr : newExprs) {
+    if (rule.IsTransfromation()) {
+      tasks.push(ExplExpr(newExpr, limit));
+    } else {
+      // implementation rule: logic => physical
+      // 可能抛出异常: limit <= 0
+      limit = UpdateCostLimit(newExpr, limit);
+      tasks.push(OptInputs(newExpr, limit));
+    }
+  }
+}
+```
+
+
 ***6 OptInputs***
 
 - 功能：
 - 调度与被调
+
+```c++
+// expr = (A JOIN B) JOIN C
+// childExpr : A JOIN B 和 C
+// 1: 把自己放回栈中, 下一次迭代器会获取C
+// 2: 分配一个OptGrp task去优化A JOIN B
+auto OptInputs(expr, limit) -> ? {
+  auto childExpr = expr.GetNextInput();
+  if (childExpr == NULL) {
+    memo.UpdateBestPlan(expr);
+    return;
+  }
+
+  tasks.push(OptInputs(expr, limit));
+  // 可能抛出异常: limit <= 0
+  limit = UpdateCostLimit(newExpr, limit);
+  tasks.push(OptGrp(GetGroup(childExpr), limit));
+}
+```
+
+### Improve
+
+实际工业实现上，有一些优化，虽然不会影响搜索的整体时间复杂度，但是能对
+
+***Simplification Rules***
+
+在探索查询计划的各个组时，Memo会记录所有之前访问过的组，但在某些情况下，我们总是希望系统apply某些特定的优化，因此不必在Memo中保留apply这些优化之前的查询计划，减少需要维护的信息。在实现上，我们可以对某条规则进行指定，当这些规则apply的时候删除掉旧的部分。或者把这些rule单独拎出来，在启动优化器之前apply，在doris中可以看到，这些归属于rewrite rules。
+
+***Macro Rules***
+
+在Volcano中，对rule的定义是简单而独立，算法自行找到应该apply哪些rules。实际上我们可以允许在单个rule内进行多阶段转换，来降低搜索空间的复杂度，加速优化。可以理解为减少了总的rule数量，搜索算法执行的时候自然会快一些。
+
+***Parallelizing Query Optimization***
+
+
+
+
+
+
+查询计划的准确性或质量很大程度上取决于统计数据和成本估计，所以有的时候并不是你的搜索算法实现的有多糟糕，而是提供给优化器的这些统计信息不够准确。
