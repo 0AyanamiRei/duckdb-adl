@@ -296,6 +296,8 @@ CMakeUserPresets.json
 
 # Generated documentation
 docs
+!docs/
+!docs/**/*.md
 
 # tests
 test/test.sql

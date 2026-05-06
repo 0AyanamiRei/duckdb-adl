@@ -1,0 +1,180 @@
+# Experiment Scale and Benchmark Protocol
+
+English TL;DR: ADL-OPT uses a staged benchmark protocol: tiny TPC-H for development, TPC-H SF 0.1/SF 1 for validation, JOB/IMDB for the main thesis benchmark, and larger scale factors only as optional stress tests.
+
+Updated: 2026-05-06
+
+Key terms: benchmark protocol, dataset scale, TPC-H, JOB, IMDB, smoke test, main experiment
+
+## Purpose
+
+本文档固定 ADL-OPT 第一阶段的测试轮次、数据集规模和资源预估。目标不是追求精确到 MB 的容量预测，而是让每一轮实验都有明确的输入规模、运行目的、磁盘预算和准入标准，避免把项目拖成不可复现的数据搬运工程。
+
+ADL-OPT v0 只研究 offline join-order decision harness，不修改 DuckDB 查询行为。所有性能结论都必须建立在结果正确、计划形状可验证、实验配置可复现的前提上。
+
+## Scale Ladder
+
+| Round | Goal | Dataset | Scale | Approximate Disk Budget | Main Use |
+|---|---|---:|---:|---:|---|
+| R0 | Harness development | Mock/static query graph | 0 | <10 MB | SQL graph extraction, connected state enumeration, JSONL schema checks |
+| R1 | Minimal smoke | TPC-H | SF 0.01 | 10-30 MB | Verify DuckDB execution, checksum, profiling, and fixed-order SQL generation |
+| R2 | Routine development | TPC-H | SF 0.1 | 100-300 MB | Validate Q3/Q5/Q8/Q9/Q10 with default/original/heuristic/random orders |
+| R3 | Local validation | TPC-H | SF 1 | 1-3 GB | Measure whether join-order choices create meaningful execution-time differences |
+| R4 | Main thesis benchmark | JOB/IMDB | Fixed JOB data | 1-3 GB | Evaluate ADL-OPT on larger join graphs and skewed real-world-style predicates |
+| R5 | Optional stress | TPC-H | SF 10 | 10-30 GB | Stress a small query subset after the harness is stable |
+
+这些预算按本机 DuckDB 落库、profiling 文件、JSONL artifact 和少量中间结果预留。不同文件系统、压缩格式和临时目录配置会造成波动；实验报告中必须记录实际数据库文件大小和 artifact 目录大小。
+
+## Recommended Progression
+
+R0 是默认开发入口。它不依赖 DuckDB binary，也不要求真实数据，只要求静态 runner 能生成 `query_graph.jsonl`、`state.jsonl`、`transition.jsonl`、`run_result.jsonl` 和 `decision.jsonl`。
+
+R1 使用 TPC-H SF 0.01，优先跑 Q3、Q5、Q8。每个 query 至少生成 DuckDB default、SQL original、cardinality heuristic 和 5 个 random valid connected orders。R1 的目标是 1-5 分钟内完成一轮，并暴露 SQL 生成、checksum、profiling、timeout 和 summary 逻辑的问题。
+
+R2 使用 TPC-H SF 0.1，覆盖 Q3、Q5、Q8、Q9、Q10。每个 query 至少生成 DuckDB default、SQL original、cardinality heuristic、20 个 random valid connected orders 和 sampled oracle best order。R2 是功能稳定性的主要门槛。
+
+R3 使用 TPC-H SF 1。它不要求全量 TPC-H，只要求 join-heavy 查询子集。R3 用来判断 join-order variant 的性能差异是否大到足够写进论文，而不是只证明 harness 可以运行。
+
+R4 使用 JOB/IMDB 作为主论文 benchmark。仓库中已有 JOB/IMDB 查询和答案文件，加载脚本会读取 21 个 parquet 数据源。第一版主实验建议筛选 20-40 个 inner equi-join-heavy 查询；不要求一次覆盖全部 JOB 查询。
+
+R5 是可选压力实验。只有在 R2/R3/R4 都稳定后，才选择少量 TPC-H SF 10 查询运行。R5 不作为毕设通过条件。
+
+## Workload Selection
+
+TPC-H smoke/development 查询固定为：
+
+- Q3
+- Q5
+- Q8
+- Q9
+- Q10
+
+其中 Q3、Q5、Q8 是最小验收子集。Q9 和 Q10 用于扩大 join 图与谓词形态覆盖。
+
+JOB/IMDB 主实验应优先选择：
+
+- 只包含 inner join 或能被 DuckDB 当前 join-order optimizer 处理的 comparison join。
+- join relation 数量适中到较多，能产生非平凡 join-order 搜索空间。
+- 谓词选择性有差异，避免所有 order 性能几乎一致。
+- DuckDB default、original order 和随机合法 order 都能稳定通过 correctness check。
+
+第一阶段不把 outer join、ASOF、MARK、SINGLE、dependent/delim join 或复杂 correlated subquery 作为主要 workload。
+
+## Benchmark Modes
+
+计划控制验证模式用于确认固定 join order 没被 DuckDB 改形：
+
+```sql
+SET disabled_optimizers='join_order,build_side_probe_side';
+```
+
+性能测量模式用于模拟“只替换 join-order optimizer”的环境：
+
+```sql
+SET disabled_optimizers='join_order';
+```
+
+所有主实验默认使用单线程，降低噪声：
+
+```sql
+SET threads=1;
+```
+
+必要时可以添加多线程补充实验，但不能替代单线程主结果。
+
+## Baselines
+
+每个 query 至少比较：
+
+- DuckDB default optimizer.
+- SQL original join order.
+- Cardinality heuristic order.
+- Random valid connected orders.
+- Sampled oracle best order.
+- ADL-OPT scorer selected order.
+
+Random order 数量按轮次递增：
+
+- R1: 5 per query.
+- R2: 20 per query.
+- R3/R4: 20-100 per query, 由运行时间预算决定。
+
+如果某个查询的候选空间很小，应记录实际候选数量，不要重复采样伪造样本量。
+
+## Measurement Rules
+
+每个 variant 至少 warm up 1 次，正式测量 5 次。论文主结果推荐正式测量 7 次，并报告 P50/P95。
+
+每次运行必须记录：
+
+- query id
+- dataset id and scale factor
+- SQL variant id
+- join order path
+- DuckDB version or commit
+- optimizer settings
+- thread count
+- timeout
+- latency
+- optimizer time if available
+- execution time if available
+- EXPLAIN hash
+- result row count
+- result checksum
+- failure reason when failed
+
+性能 summary 至少包含：
+
+- speedup versus DuckDB default
+- regret versus sampled oracle
+- P50/P95 latency
+- optimizer time
+- execution time
+- failed order count
+- plan valid rate
+
+## Correctness Gates
+
+任何 variant 进入性能统计前必须通过：
+
+- 结果 row count 与 DuckDB default 一致。
+- order-independent checksum 与 DuckDB default 一致，或排序后逐行一致。
+- 固定 join order 的 EXPLAIN 证据可追溯。
+- 运行未超时，且 profiling artifact 可解析。
+
+Correctness 失败的 variant 不进入 speedup/regret 统计，但必须计入 failed order count。
+
+## Resource Defaults
+
+最小可复现实验资源：
+
+- Dataset: TPC-H SF 0.1.
+- Disk budget: 1 GB.
+- Queries: Q3, Q5, Q8.
+- Random orders: 5-20 per query.
+
+完整本机实验资源：
+
+- Dataset: TPC-H SF 1 plus JOB/IMDB.
+- Disk budget: 8-10 GB.
+- Queries: TPC-H Q3/Q5/Q8/Q9/Q10 plus 20-40 JOB/IMDB queries.
+- Random orders: 20-100 per query, constrained by timeout.
+
+可选压力资源：
+
+- Dataset: TPC-H SF 10.
+- Disk budget: 30 GB or more.
+- Queries: a small join-heavy subset only.
+
+## Reporting Requirements
+
+每轮实验结束后生成一个 summary 目录，至少包含：
+
+- `summary.json`
+- `summary.md`
+- JSONL artifact files
+- DuckDB settings snapshot
+- dataset scale and actual disk usage
+- command line used to run the experiment
+
+实验报告中的图表必须标注数据集规模。不同 scale factor 的 latency 不能直接混在同一条结论中比较。
