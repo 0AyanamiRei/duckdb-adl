@@ -72,6 +72,7 @@ Required fields:
 
 - `query_id`: string.
 - `variant_id`: string.
+- `source_variant_id`: string or null, used when a row aliases or summarizes another variant.
 - `baseline_kind`: `duckdb_default`, `sql_original`, `cardinality_heuristic`, `random_valid`, or `sampled_oracle`.
 - `join_path`: array of aliases.
 - `sql_hash`: string.
@@ -81,8 +82,13 @@ Required fields:
 - `row_count`: number or null.
 - `result_checksum`: string or null.
 - `latency_ms`: number or null.
+- `latency_p50_ms`: number or null.
+- `latency_p95_ms`: number or null.
+- `latency_samples_ms`: array of numbers.
 - `optimizer_time_ms`: number or null.
 - `execution_time_ms`: number or null.
+- `speedup_vs_default`: number or null.
+- `regret_vs_sampled_oracle`: number or null.
 - `timeout`: boolean.
 - `failure_reason`: string or null.
 

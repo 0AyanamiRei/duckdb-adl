@@ -31,6 +31,23 @@ R0 是默认开发入口。它不依赖 DuckDB binary，也不要求真实数据
 
 R1 使用 TPC-H SF 0.01，优先跑 Q3、Q5、Q8。每个 query 至少生成 DuckDB default、SQL original、cardinality heuristic 和 5 个 random valid connected orders。R1 的目标是 1-5 分钟内完成一轮，并暴露 SQL 生成、checksum、profiling、timeout 和 summary 逻辑的问题。
 
+R1 标准执行命令：
+
+```bash
+python3 scripts/adl_opt/offline_tpch_harness.py \
+  --duckdb ./build/reldebug/duckdb \
+  --database /tmp/adl-opt-r1-tpch.duckdb \
+  --output /tmp/adl-opt-r1 \
+  --queries q03 q05 q08 \
+  --scale-factor 0.01 \
+  --random-orders 5 \
+  --execute \
+  --threads 1 \
+  --warmup-runs 1 \
+  --measure-runs 5 \
+  --timeout 120
+```
+
 R2 使用 TPC-H SF 0.1，覆盖 Q3、Q5、Q8、Q9、Q10。每个 query 至少生成 DuckDB default、SQL original、cardinality heuristic、20 个 random valid connected orders 和 sampled oracle best order。R2 是功能稳定性的主要门槛。
 
 R3 使用 TPC-H SF 1。它不要求全量 TPC-H，只要求 join-heavy 查询子集。R3 用来判断 join-order variant 的性能差异是否大到足够写进论文，而不是只证明 harness 可以运行。
@@ -81,6 +98,15 @@ SET threads=1;
 ```
 
 必要时可以添加多线程补充实验，但不能替代单线程主结果。
+
+编译 DuckDB 时默认只使用约 75% CPU，满足 70-80% 的本机资源限制：
+
+```bash
+CPU_COUNT=$(nproc 2>/dev/null || sysctl -n hw.ncpu)
+BUILD_JOBS=$(( CPU_COUNT * 75 / 100 ))
+[ "$BUILD_JOBS" -lt 1 ] && BUILD_JOBS=1
+CMAKE_BUILD_PARALLEL_LEVEL=$BUILD_JOBS BUILD_TPCH=1 make reldebug
+```
 
 ## Baselines
 
@@ -140,9 +166,9 @@ Random order 数量按轮次递增：
 - 结果 row count 与 DuckDB default 一致。
 - order-independent checksum 与 DuckDB default 一致，或排序后逐行一致。
 - 固定 join order 的 EXPLAIN 证据可追溯。
-- 运行未超时，且 profiling artifact 可解析。
+- 运行未超时。
 
-Correctness 失败的 variant 不进入 speedup/regret 统计，但必须计入 failed order count。
+Profiling artifact 用于补充 optimizer/execution time。R1 允许 profiling 字段为 null；解析失败不应阻断 correctness。Correctness 失败或 plan-control 失败的 variant 不进入 speedup/regret 统计，但必须计入 failed order count。
 
 ## Resource Defaults
 

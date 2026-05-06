@@ -9,6 +9,7 @@ Key terms: execution plan, active plan, completed plan, tech debt, harness
 ## Active
 
 - `docs/exec-plans/active/0001-adl-opt-harness-bootstrap.md`: bootstrap the documentation and offline experiment harness specification.
+- `docs/exec-plans/active/0002-r1-tpch-execution-loop.md`: implement the SF0.01 TPC-H R1 executable loop, including data reuse, fixed join-order execution, correctness checks, latency/profile collection, and summary reporting.
 
 ## Completed
 
