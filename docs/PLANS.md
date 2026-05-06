@@ -22,6 +22,10 @@ Track durable research and implementation debt in `docs/exec-plans/tech-debt-tra
 
 - `docs/design-docs/experiment-scale-and-benchmark-protocol.md`: staged dataset sizes, benchmark rounds, resource budgets, correctness gates, and reporting requirements.
 
+## Collaboration Protocol
+
+- `docs/design-docs/pr-flow.md`: feature branch, pull request, upstream sync, and empty PR validation flow for the ADL-OPT fork-as-primary-project setup.
+
 ## Plan Rules
 
 - Every active plan should name its goal, non-goals, inputs, outputs, validation, and rollback or pause criteria.
