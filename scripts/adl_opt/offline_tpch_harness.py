@@ -165,7 +165,16 @@ QUERY_SPECS: dict[str, QuerySpec] = {
     ),
 }
 
-TPC_H_TABLES = ("customer", "lineitem", "nation", "orders", "part", "partsupp", "region", "supplier")
+TPC_H_TABLES = (
+    "customer",
+    "lineitem",
+    "nation",
+    "orders",
+    "part",
+    "partsupp",
+    "region",
+    "supplier",
+)
 
 
 def sha256_text(text: str) -> str:
@@ -229,7 +238,9 @@ def valid_additions(spec: QuerySpec, current: set[str]) -> list[str]:
     return sorted(additions)
 
 
-def transitions(spec: QuerySpec) -> list[tuple[tuple[str, ...], tuple[str, ...], str, list[str]]]:
+def transitions(
+    spec: QuerySpec,
+) -> list[tuple[tuple[str, ...], tuple[str, ...], str, list[str]]]:
     result = []
     for state in [tuple()] + connected_states(spec):
         current = set(state)
@@ -240,7 +251,8 @@ def transitions(spec: QuerySpec) -> list[tuple[tuple[str, ...], tuple[str, ...],
             predicates = [
                 edge.predicate
                 for edge in spec.edges
-                if added in {edge.left, edge.right} and edge_touches(edge, current | {added})
+                if added in {edge.left, edge.right}
+                and edge_touches(edge, current | {added})
             ]
             result.append((tuple(sorted(state)), target, added, predicates))
     return result
@@ -276,7 +288,9 @@ def random_valid_order(spec: QuerySpec, rng: random.Random) -> list[str]:
     return path
 
 
-def join_predicates_for_addition(spec: QuerySpec, current: set[str], added: str) -> list[str]:
+def join_predicates_for_addition(
+    spec: QuerySpec, current: set[str], added: str
+) -> list[str]:
     predicates = []
     for edge in spec.edges:
         if edge.left == added and edge.right in current:
@@ -293,7 +307,9 @@ def build_join_from_path(spec: QuerySpec, path: list[str]) -> str:
     for added in path[1:]:
         predicates = join_predicates_for_addition(spec, current, added)
         if not predicates:
-            raise ValueError(f"Invalid path for {spec.query_id}: cannot add {added} to {sorted(current)}")
+            raise ValueError(
+                f"Invalid path for {spec.query_id}: cannot add {added} to {sorted(current)}"
+            )
         on_clause = " AND ".join(predicates)
         expr = f"({expr} JOIN {table_ref(alias_map[added])} ON {on_clause})"
         current.add(added)
@@ -324,7 +340,10 @@ def replace_from_clause(sql: str, spec: QuerySpec, join_expr: str) -> str:
         start = match.end()
         end = match.end() + where_match.start()
         candidate = lowered[start:end]
-        if all(re.search(rf"\b{re.escape(alias.table.lower())}\b", candidate) for alias in spec.aliases):
+        if all(
+            re.search(rf"\b{re.escape(alias.table.lower())}\b", candidate)
+            for alias in spec.aliases
+        ):
             candidates.append((end - start, start, end))
     if not candidates:
         raise ValueError(f"Could not find target FROM clause for {spec.query_id}")
@@ -356,7 +375,9 @@ def duckdb_run(
         cmd.append("-csv")
     cmd.extend(["-c", sql])
     start = time.perf_counter()
-    proc = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
+    proc = subprocess.run(
+        cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout
+    )
     latency_ms = (time.perf_counter() - start) * 1000
     return proc.returncode, proc.stdout, proc.stderr, latency_ms
 
@@ -367,10 +388,18 @@ def disabled_optimizers_for_mode(mode: str) -> str:
     return "join_order"
 
 
-def session_sql(sql: str, args: argparse.Namespace, *, fixed_order: bool, profile_json: Path | None = None) -> str:
+def session_sql(
+    sql: str,
+    args: argparse.Namespace,
+    *,
+    fixed_order: bool,
+    profile_json: Path | None = None,
+) -> str:
     statements = [f"SET threads={args.threads};"]
     if fixed_order:
-        statements.append(f"SET disabled_optimizers='{disabled_optimizers_for_mode(args.plan_control_mode)}';")
+        statements.append(
+            f"SET disabled_optimizers='{disabled_optimizers_for_mode(args.plan_control_mode)}';"
+        )
     if profile_json is not None:
         statements.extend(
             [
@@ -382,18 +411,26 @@ def session_sql(sql: str, args: argparse.Namespace, *, fixed_order: bool, profil
     return "\n".join(statements)
 
 
-def explain_session_sql(sql: str, args: argparse.Namespace, *, fixed_order: bool) -> str:
+def explain_session_sql(
+    sql: str, args: argparse.Namespace, *, fixed_order: bool
+) -> str:
     statements = [f"SET threads={args.threads};"]
     if fixed_order:
-        statements.append(f"SET disabled_optimizers='{disabled_optimizers_for_mode(args.plan_control_mode)}';")
+        statements.append(
+            f"SET disabled_optimizers='{disabled_optimizers_for_mode(args.plan_control_mode)}';"
+        )
     statements.append("EXPLAIN " + sql.rstrip().rstrip(";") + ";")
     return "\n".join(statements)
 
 
-def explain_json_session_sql(sql: str, args: argparse.Namespace, *, fixed_order: bool) -> str:
+def explain_json_session_sql(
+    sql: str, args: argparse.Namespace, *, fixed_order: bool
+) -> str:
     statements = [f"SET threads={args.threads};"]
     if fixed_order:
-        statements.append(f"SET disabled_optimizers='{disabled_optimizers_for_mode(args.plan_control_mode)}';")
+        statements.append(
+            f"SET disabled_optimizers='{disabled_optimizers_for_mode(args.plan_control_mode)}';"
+        )
     statements.append("EXPLAIN (FORMAT JSON) " + sql.rstrip().rstrip(";") + ";")
     return "\n".join(statements)
 
@@ -410,7 +447,9 @@ def tpch_tables_exist(duckdb: Path, database: Path, timeout: int) -> bool:
     return rows[1][0] == str(len(TPC_H_TABLES))
 
 
-def ensure_tpch_data(duckdb: Path, database: Path, scale_factor: float, timeout: int, force_reload: bool) -> None:
+def ensure_tpch_data(
+    duckdb: Path, database: Path, scale_factor: float, timeout: int, force_reload: bool
+) -> None:
     if force_reload and database.exists():
         database.unlink()
     if not force_reload and tpch_tables_exist(duckdb, database, timeout):
@@ -426,7 +465,9 @@ def result_checksum(csv_text: str) -> tuple[int, str]:
     if not rows:
         return 0, sha256_text("")
     data_rows = rows[1:]
-    normalized_rows = sorted(json.dumps(row, ensure_ascii=True, separators=(",", ":")) for row in data_rows)
+    normalized_rows = sorted(
+        json.dumps(row, ensure_ascii=True, separators=(",", ":")) for row in data_rows
+    )
     return len(data_rows), sha256_text("\n".join(normalized_rows))
 
 
@@ -526,11 +567,18 @@ def explain_hash(
     join_path: list[str] | None = None,
     validate_shape: bool = False,
 ) -> tuple[str | None, bool, str | None]:
-    code, out, err, _ = duckdb_run(duckdb, database, explain_session_sql(sql, args, fixed_order=fixed_order), args.timeout)
+    code, out, err, _ = duckdb_run(
+        duckdb,
+        database,
+        explain_session_sql(sql, args, fixed_order=fixed_order),
+        args.timeout,
+    )
     if code != 0:
         return None, False, err.strip() or "EXPLAIN failed"
     if validate_shape and spec is not None and join_path:
-        plan_valid, plan_error = validate_join_order_shape(duckdb, database, sql, args, spec, join_path)
+        plan_valid, plan_error = validate_join_order_shape(
+            duckdb, database, sql, args, spec, join_path
+        )
         return sha256_text(out), plan_valid, plan_error
     return sha256_text(out), True, None
 
@@ -563,8 +611,15 @@ def profile_metrics(profile_path: Path) -> tuple[float | None, float | None]:
     def visit(node: object) -> None:
         nonlocal optimizer_time, execution_time
         if isinstance(node, dict):
-            name = str(node.get("name") or node.get("operator_name") or node.get("extra_info") or "").lower()
-            timing = node.get("timing", node.get("operator_timing", node.get("latency")))
+            name = str(
+                node.get("name")
+                or node.get("operator_name")
+                or node.get("extra_info")
+                or ""
+            ).lower()
+            timing = node.get(
+                "timing", node.get("operator_timing", node.get("latency"))
+            )
             if isinstance(timing, (int, float)):
                 timing_ms = float(timing) * 1000 if timing < 1000 else float(timing)
                 if "optimizer" in name:
@@ -584,8 +639,17 @@ def profile_metrics(profile_path: Path) -> tuple[float | None, float | None]:
     return optimizer_time, execution_time
 
 
-def build_rows(repo: Path, specs: list[QuerySpec], scale_factor: float, seed: int, random_orders: int) -> dict[str, list[dict]]:
-    rows = {name: [] for name in ["query_graph", "state", "transition", "decision", "run_result"]}
+def build_rows(
+    repo: Path,
+    specs: list[QuerySpec],
+    scale_factor: float,
+    seed: int,
+    random_orders: int,
+) -> dict[str, list[dict]]:
+    rows = {
+        name: []
+        for name in ["query_graph", "state", "transition", "decision", "run_result"]
+    }
     for spec in specs:
         sql = read_sql(repo, spec)
         rows["query_graph"].append(
@@ -634,13 +698,29 @@ def build_rows(repo: Path, specs: list[QuerySpec], scale_factor: float, seed: in
         variants: list[tuple[str, str, list[str], int | None]] = [
             ("duckdb_default", "duckdb_default", [], None),
             ("sql_original", "sql_original", original_order(spec), None),
-            ("cardinality_heuristic", "cardinality_heuristic", cardinality_heuristic_order(spec), None),
+            (
+                "cardinality_heuristic",
+                "cardinality_heuristic",
+                cardinality_heuristic_order(spec),
+                None,
+            ),
         ]
         rng = random.Random(seed)
         for idx in range(random_orders):
-            variants.append((f"random_valid_{idx}", "random_valid", random_valid_order(spec, rng), seed + idx))
+            variants.append(
+                (
+                    f"random_valid_{idx}",
+                    "random_valid",
+                    random_valid_order(spec, rng),
+                    seed + idx,
+                )
+            )
         for variant_id, baseline_kind, path, variant_seed in variants:
-            variant_text = sql if baseline_kind in {"duckdb_default", "sql_original"} else variant_sql(repo, spec, path)
+            variant_text = (
+                sql
+                if baseline_kind in {"duckdb_default", "sql_original"}
+                else variant_sql(repo, spec, path)
+            )
             rows["run_result"].append(
                 {
                     "query_id": spec.query_id,
@@ -677,9 +757,12 @@ def build_rows(repo: Path, specs: list[QuerySpec], scale_factor: float, seed: in
                         "decision_id": f"{spec.query_id}:{variant_id}:{step}",
                         "policy": baseline_kind,
                         "from_state_id": state_id(current),
-                        "chosen_transition_id": transition_ids.get((tuple(sorted(current)), alias)),
+                        "chosen_transition_id": transition_ids.get(
+                            (tuple(sorted(current)), alias)
+                        ),
                         "candidate_transition_ids": [
-                            transition_ids.get((tuple(sorted(current)), candidate)) for candidate in candidates
+                            transition_ids.get((tuple(sorted(current)), candidate))
+                            for candidate in candidates
                         ],
                         "score": None,
                         "valid": alias in candidates,
@@ -690,14 +773,21 @@ def build_rows(repo: Path, specs: list[QuerySpec], scale_factor: float, seed: in
     return rows
 
 
-def execute_rows(repo: Path, rows: dict[str, list[dict]], specs: list[QuerySpec], args: argparse.Namespace) -> None:
+def execute_rows(
+    repo: Path,
+    rows: dict[str, list[dict]],
+    specs: list[QuerySpec],
+    args: argparse.Namespace,
+) -> None:
     if not args.duckdb:
         return
     duckdb = Path(args.duckdb)
     database = Path(args.database)
     profile_dir = Path(args.output).resolve() / "profiles"
     profile_dir.mkdir(parents=True, exist_ok=True)
-    ensure_tpch_data(duckdb, database, args.scale_factor, args.timeout, args.force_reload)
+    ensure_tpch_data(
+        duckdb, database, args.scale_factor, args.timeout, args.force_reload
+    )
     spec_by_id = {spec.query_id: spec for spec in specs}
     default_results: dict[str, tuple[int, str]] = {}
     default_latency: dict[str, float] = {}
@@ -717,7 +807,8 @@ def execute_rows(repo: Path, rows: dict[str, list[dict]], specs: list[QuerySpec]
                 fixed_order=fixed_order,
                 spec=spec,
                 join_path=row["join_path"],
-                validate_shape=row["baseline_kind"] in {"cardinality_heuristic", "random_valid"},
+                validate_shape=row["baseline_kind"]
+                in {"cardinality_heuristic", "random_valid"},
             )
             for _ in range(args.warmup_runs):
                 duckdb_run(
@@ -733,13 +824,18 @@ def execute_rows(repo: Path, rows: dict[str, list[dict]], specs: list[QuerySpec]
             optimizer_times: list[float] = []
             execution_times: list[float] = []
             for run_idx in range(args.measure_runs):
-                profile_path = profile_dir / f"{row['variant_id'].replace(':', '_')}_run{run_idx}.json"
+                profile_path = (
+                    profile_dir
+                    / f"{row['variant_id'].replace(':', '_')}_run{run_idx}.json"
+                )
                 if profile_path.exists():
                     profile_path.unlink()
                 last_code, last_out, last_err, latency_ms = duckdb_run(
                     duckdb,
                     database,
-                    session_sql(sql, args, fixed_order=fixed_order, profile_json=profile_path),
+                    session_sql(
+                        sql, args, fixed_order=fixed_order, profile_json=profile_path
+                    ),
                     args.timeout,
                 )
                 samples.append(latency_ms)
@@ -754,7 +850,9 @@ def execute_rows(repo: Path, rows: dict[str, list[dict]], specs: list[QuerySpec]
             row.update({"timeout": True, "failure_reason": "timeout"})
             continue
         row["explain_hash"] = explain
-        row["plan_control_valid"] = row["baseline_kind"] == "duckdb_default" or plan_valid
+        row["plan_control_valid"] = (
+            row["baseline_kind"] == "duckdb_default" or plan_valid
+        )
         row["latency_samples_ms"] = samples
         row["latency_p50_ms"] = percentile(samples, 0.50)
         row["latency_p95_ms"] = percentile(samples, 0.95)
@@ -762,7 +860,9 @@ def execute_rows(repo: Path, rows: dict[str, list[dict]], specs: list[QuerySpec]
         row["optimizer_time_ms"] = percentile(optimizer_times, 0.50)
         row["execution_time_ms"] = percentile(execution_times, 0.50)
         if last_code != 0:
-            row["failure_reason"] = last_err.strip() or explain_error or "execution failed"
+            row["failure_reason"] = (
+                last_err.strip() or explain_error or "execution failed"
+            )
             continue
         checksum = result_checksum(last_out)
         row["row_count"], row["result_checksum"] = checksum
@@ -775,7 +875,11 @@ def execute_rows(repo: Path, rows: dict[str, list[dict]], specs: list[QuerySpec]
         else:
             row["correct"] = default_results.get(row["query_id"]) == checksum
             row["failure_reason"] = None if row["correct"] else "checksum_mismatch"
-        if row["correct"] and row["plan_control_valid"] and row["latency_ms"] is not None:
+        if (
+            row["correct"]
+            and row["plan_control_valid"]
+            and row["latency_ms"] is not None
+        ):
             baseline = default_latency.get(row["query_id"])
             if baseline:
                 row["speedup_vs_default"] = baseline / row["latency_ms"]
@@ -792,44 +896,70 @@ def write_summary(output: Path, rows: dict[str, list[dict]], executed: bool) -> 
     run_rows = rows["run_result"]
     per_query = {}
     for query_id, query_rows in grouped_run_rows(run_rows).items():
-        attempted = [row for row in query_rows if row["failure_reason"] != "not_executed"]
+        attempted = [
+            row for row in query_rows if row["failure_reason"] != "not_executed"
+        ]
         comparable = [
             row
             for row in attempted
-            if row["correct"] and row["plan_control_valid"] and row["latency_ms"] is not None
+            if row["correct"]
+            and row["plan_control_valid"]
+            and row["latency_ms"] is not None
         ]
-        default_row = next((row for row in query_rows if row["baseline_kind"] == "duckdb_default"), None)
+        default_row = next(
+            (row for row in query_rows if row["baseline_kind"] == "duckdb_default"),
+            None,
+        )
         oracle_row = min(comparable, key=lambda row: row["latency_ms"], default=None)
         default_latency = default_row.get("latency_ms") if default_row else None
         oracle_latency = oracle_row.get("latency_ms") if oracle_row else None
         per_query[query_id] = {
             "default_latency_ms": default_latency,
-            "sampled_oracle_variant_id": oracle_row.get("variant_id") if oracle_row else None,
+            "sampled_oracle_variant_id": (
+                oracle_row.get("variant_id") if oracle_row else None
+            ),
             "sampled_oracle_latency_ms": oracle_latency,
             "sampled_oracle_speedup_vs_default": (
-                default_latency / oracle_latency if default_latency and oracle_latency else None
+                default_latency / oracle_latency
+                if default_latency and oracle_latency
+                else None
             ),
             "comparable_variant_count": len(comparable),
             "failed_variant_count": len(attempted) - len(comparable),
         }
         if oracle_row:
             for row in query_rows:
-                if row["correct"] and row["plan_control_valid"] and row["latency_ms"] is not None:
-                    row["regret_vs_sampled_oracle"] = row["latency_ms"] / oracle_row["latency_ms"] - 1.0
+                if (
+                    row["correct"]
+                    and row["plan_control_valid"]
+                    and row["latency_ms"] is not None
+                ):
+                    row["regret_vs_sampled_oracle"] = (
+                        row["latency_ms"] / oracle_row["latency_ms"] - 1.0
+                    )
     summary = {
         "updated": UPDATED,
         "executed": executed,
         "query_count": len({row["query_id"] for row in rows["query_graph"]}),
         "variant_count": len(run_rows),
-        "correctness_failures": sum(1 for row in run_rows if row["failure_reason"] not in (None, "not_executed")),
+        "correctness_failures": sum(
+            1 for row in run_rows if row["failure_reason"] not in (None, "not_executed")
+        ),
         "plan_control_failures": sum(
-            1 for row in run_rows if row["failure_reason"] != "not_executed" and not row["plan_control_valid"]
+            1
+            for row in run_rows
+            if row["failure_reason"] != "not_executed" and not row["plan_control_valid"]
         ),
         "timeout_count": sum(1 for row in run_rows if row["timeout"]),
         "per_query": per_query,
-        "jsonl_files": [f"{name}.jsonl" for name in ["query_graph", "state", "transition", "run_result", "decision"]],
+        "jsonl_files": [
+            f"{name}.jsonl"
+            for name in ["query_graph", "state", "transition", "run_result", "decision"]
+        ],
     }
-    (output / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
+    (output / "summary.json").write_text(
+        json.dumps(summary, indent=2, sort_keys=True) + "\n"
+    )
     lines = [
         "# ADL-OPT Run Summary",
         "",
@@ -860,22 +990,39 @@ def write_summary(output: Path, rows: dict[str, list[dict]], executed: bool) -> 
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Generate ADL-OPT v0 TPC-H JSONL artifacts")
+    parser = argparse.ArgumentParser(
+        description="Generate ADL-OPT v0 TPC-H JSONL artifacts"
+    )
     parser.add_argument("--repo", default=".", help="DuckDB repository root")
     parser.add_argument("--output", required=True, help="Output directory")
-    parser.add_argument("--queries", nargs="+", default=["q03", "q05", "q08"], choices=sorted(QUERY_SPECS))
+    parser.add_argument(
+        "--queries",
+        nargs="+",
+        default=["q03", "q05", "q08"],
+        choices=sorted(QUERY_SPECS),
+    )
     parser.add_argument("--scale-factor", type=float, default=0.01)
     parser.add_argument("--random-orders", type=int, default=5)
     parser.add_argument("--seed", type=int, default=20260506)
     parser.add_argument("--duckdb", help="Optional DuckDB CLI/binary path")
     parser.add_argument("--database", default="/tmp/adl-opt-tpch.duckdb")
-    parser.add_argument("--execute", action="store_true", help="Execute variants using --duckdb")
+    parser.add_argument(
+        "--execute", action="store_true", help="Execute variants using --duckdb"
+    )
     parser.add_argument("--timeout", type=int, default=120)
     parser.add_argument("--threads", type=int, default=1)
     parser.add_argument("--warmup-runs", type=int, default=1)
     parser.add_argument("--measure-runs", type=int, default=5)
-    parser.add_argument("--plan-control-mode", choices=["performance", "validation"], default="performance")
-    parser.add_argument("--force-reload", action="store_true", help="Regenerate the TPC-H database before execution")
+    parser.add_argument(
+        "--plan-control-mode",
+        choices=["performance", "validation"],
+        default="performance",
+    )
+    parser.add_argument(
+        "--force-reload",
+        action="store_true",
+        help="Regenerate the TPC-H database before execution",
+    )
     return parser.parse_args()
 
 
