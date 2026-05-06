@@ -1,10 +1,10 @@
 # ADL-OPT Offline Harness
 
-English TL;DR: Minimal local runner for generating ADL-OPT v0 JSONL artifacts from selected TPC-H join graphs.
+English TL;DR: Local runners for ADL-OPT TPC-H execution smoke tests and n>12 JOB/IMDB large-join static artifacts.
 
 Updated: 2026-05-06
 
-Key terms: ADL-OPT, offline runner, TPC-H, JSONL, DuckDB CLI
+Key terms: ADL-OPT, offline runner, TPC-H, JOB/IMDB, large join, JSONL
 
 ## Usage
 
@@ -12,6 +12,15 @@ Static artifact generation, no DuckDB binary required:
 
 ```bash
 python3 scripts/adl_opt/offline_tpch_harness.py --output /tmp/adl-opt-run --queries q03 q05 q08
+```
+
+Large-join JOB/IMDB static artifact generation, no DuckDB binary required:
+
+```bash
+python3 scripts/adl_opt/offline_large_join_harness.py \
+  --output /tmp/adl-opt-large-static \
+  --queries 29a 29b 29c 28a 28b 28c 33a 33b 33c \
+  --random-paths 5
 ```
 
 Build DuckDB with the TPC-H extension while using roughly 75% CPU:
@@ -56,9 +65,13 @@ The database is reused when TPC-H tables already exist. Add `--force-reload` to 
 - `transition.jsonl`
 - `decision.jsonl`
 - `run_result.jsonl`
+- `linear_order.jsonl` for large-join endpoint runs
+- `endpoint_path.jsonl` for large-join endpoint runs
 - `summary.json`
 - `summary.md`
 
 The schema is documented in `docs/design-docs/feature-and-label-schema.md`.
 
 `run_result.jsonl` stores latency samples, P50/P95 latency, row count, order-independent checksum, `EXPLAIN` hash, and optional profiling-derived optimizer/execution times.
+
+The large-join runner is static today. It parses JOB/IMDB SQL, emits relation graphs for n>12 queries, writes a fixture linear order, and records endpoint-append decisions. It deliberately does not implement the real large-join linearization algorithm yet.

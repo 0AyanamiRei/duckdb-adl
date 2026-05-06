@@ -1,10 +1,10 @@
 # ADL-OPT Core Beliefs
 
-English TL;DR: ADL-OPT should improve query optimization by learning which connected join transition to choose next, while preserving DuckDB as the trusted execution engine.
+English TL;DR: ADL-OPT should improve large-join approximate optimization decisions while preserving DuckDB as the trusted execution engine.
 
 Updated: 2026-05-06
 
-Key terms: ADL-OPT, learned optimizer, hint, connected state, transition, join order, comparator
+Key terms: ADL-OPT, learned optimizer, large join, transition, join order, comparator
 
 ## 研究信念
 
@@ -19,6 +19,12 @@ ADL-OPT 的核心目标不是重写 DuckDB 优化器，而是在保留传统优�
 - reward/cost 来自 DuckDB 实际执行和 profiling。
 
 这个定义把论文中的“提示词选择问题”落到 DuckDB 可观测的 join-order 问题上。
+
+后续 large-join 方向进一步收窄：
+
+- `n <= 12` 继续使用 DuckDB exact DPhyp。
+- `n > 12` 才作为 ADL-OPT 的主要优化范围。
+- 线性化算法暂时独立讨论，第一版只研究已有 linear order 上的 endpoint append 决策。
 
 ## 为什么不用全局规则开关做 v0 Hint
 
@@ -39,6 +45,7 @@ v0 成功不是“模型上线”，而是形成稳定研究闭环：
 - 能生成多个固定 join-order SQL variant。
 - 能验证结果正确性和计划控制。
 - 能收集足够训练轻量 ranker/comparator 的 JSONL。
+- 能在 JOB/IMDB n>12 查询上表达 linear order、endpoint transition 和 endpoint path。
 
 ## 非目标
 

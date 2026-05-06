@@ -17,6 +17,9 @@ Key terms: terminology, hint, state, transition, CCG, join graph
 | Join graph | 连接图 | Graph where nodes are table aliases and edges are join predicates |
 | State | 状态 | A connected subset of aliases in the join graph |
 | Transition | 状态转移 | Adding one adjacent alias to a state |
+| Large join | 大连接查询 | A join-order problem with more than 12 reorderable relations in the current ADL-OPT scope |
+| Linear order | 线性顺序 | A sequence of relations produced before endpoint-append decisions; the real linearization algorithm is not implemented yet |
+| Endpoint append | 端点追加 | Adding the left or right endpoint relation next to the current interval in a linear order |
 | CCG | Cardinality-Cost Graph | NeuSO term for a graph of connected partial queries and transition costs |
 | Cardinality | 基数 | Estimated or actual row count of a relation/subplan/state |
 | Cost | 代价 | Runtime/profiling metric or estimate used to compare decisions |
@@ -28,6 +31,8 @@ Key terms: terminology, hint, state, transition, CCG, join graph
 ## 命名约定
 
 - Query ids use `tpch_q03`, `tpch_q05`, etc.
+- JOB/IMDB query ids use `job_29a`, `job_28a`, etc.
 - State ids sort aliases alphabetically and join with `+`.
+- Linear-order interval state ids include `query_id`, `linear_order_id`, and `i<left>-<right>`.
 - Transition ids combine `from_state_id` and `added_alias`.
 - Variant ids include query id, baseline kind, and index or seed.

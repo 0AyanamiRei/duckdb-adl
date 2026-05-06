@@ -52,7 +52,18 @@ R2 使用 TPC-H SF 0.1，覆盖 Q3、Q5、Q8、Q9、Q10。每个 query 至少生
 
 R3 使用 TPC-H SF 1。它不要求全量 TPC-H，只要求 join-heavy 查询子集。R3 用来判断 join-order variant 的性能差异是否大到足够写进论文，而不是只证明 harness 可以运行。
 
-R4 使用 JOB/IMDB 作为主论文 benchmark。仓库中已有 JOB/IMDB 查询和答案文件，加载脚本会读取 21 个 parquet 数据源。第一版主实验建议筛选 20-40 个 inner equi-join-heavy 查询；不要求一次覆盖全部 JOB 查询。
+R4 使用 JOB/IMDB 作为主论文 benchmark。仓库中已有 JOB/IMDB 查询和答案文件，加载脚本会读取 21 个 parquet 数据源。第一版主实验优先筛选 `n > 12` 的 inner equi-join-heavy 查询；不要求一次覆盖全部 JOB 查询。
+
+Large-join 静态入口先固定为 JOB/IMDB 29/28/33 系列：
+
+```bash
+python3 scripts/adl_opt/offline_large_join_harness.py \
+  --output /tmp/adl-opt-large-static \
+  --queries 29a 29b 29c 28a 28b 28c 33a 33b 33c \
+  --random-paths 5
+```
+
+这一步不加载 JOB 数据，也不执行 DuckDB；它只验证 SQL graph extraction、fixture linear order、linear interval state 和 endpoint append transition。
 
 R5 是可选压力实验。只有在 R2/R3/R4 都稳定后，才选择少量 TPC-H SF 10 查询运行。R5 不作为毕设通过条件。
 
@@ -71,7 +82,7 @@ TPC-H smoke/development 查询固定为：
 JOB/IMDB 主实验应优先选择：
 
 - 只包含 inner join 或能被 DuckDB 当前 join-order optimizer 处理的 comparison join。
-- join relation 数量适中到较多，能产生非平凡 join-order 搜索空间。
+- join relation 数量大于 12，能触发 DuckDB large-join approximate path。
 - 谓词选择性有差异，避免所有 order 性能几乎一致。
 - DuckDB default、original order 和随机合法 order 都能稳定通过 correctness check。
 
@@ -118,6 +129,12 @@ CMAKE_BUILD_PARALLEL_LEVEL=$BUILD_JOBS BUILD_TPCH=1 make reldebug
 - Random valid connected orders.
 - Sampled oracle best order.
 - ADL-OPT scorer selected order.
+
+Large-join endpoint 实验额外比较：
+
+- DuckDB current approximate greedy.
+- Fixture linear order plus ADL-OPT endpoint path.
+- Random endpoint paths over the same linear order.
 
 Random order 数量按轮次递增：
 
