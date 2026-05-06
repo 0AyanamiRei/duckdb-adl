@@ -13,7 +13,7 @@ Key terms: Neo, Bao, Lero, NeuSO, learned query optimizer, join order, hint
 | Neo | End-to-end neural optimizer | Tree/plan-aware representation motivation | Replacing the full optimizer |
 | Bao | Hint-based steering with bandit learning | Practical hint steering and experience collection | Online steering inside DuckDB v0 |
 | Lero | Learn-to-rank plan comparison | Pairwise/comparator framing | Depending only on generated physical plans |
-| NeuSO | CCG state-transition search with learned cost/min-cost | Connected state, transition, top-down search, partial exploration | Full GNN/TriAT implementation in v0 |
+| NeuSO | CCG state-transition search with learned cost/min-cost | Endpoint-append state/transition view after large-join linearization | Full GNN/TriAT implementation and direct replacement of DuckDB DPhyp |
 
 ## ADL-OPT v0 定位
 
@@ -25,6 +25,10 @@ ADL-OPT v0 is best described as:
 
 - 过早承诺模型效果。
 - 过早侵入 DuckDB optimizer。
+
+Large-join 后续定位更窄：
+
+> For n<=12, keep DuckDB exact DPhyp. For n>12, study whether an external ADL-OPT endpoint policy can improve the approximate join-order path after linearization.
 
 ## 后续论文表达线索
 

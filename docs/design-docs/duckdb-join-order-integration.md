@@ -1,10 +1,10 @@
 # DuckDB Join-Order Integration Notes
 
-English TL;DR: v0 is offline. Future online ADL-OPT work should target DuckDB's join-order enumerator boundary, not only pre/post optimizer extensions.
+English TL;DR: v0 is offline. Future ADL-OPT integration should target DuckDB's n>12 approximate join-order path, leaving exact DPhyp for n<=12 unchanged.
 
 Updated: 2026-05-06
 
-Key terms: DuckDB, join order optimizer, optimizer extension, PlanEnumerator, QueryGraphManager
+Key terms: DuckDB, join order optimizer, PlanEnumerator, QueryGraphManager, large join, JSON exchange
 
 ## 当前接入策略
 
@@ -14,6 +14,13 @@ v0 只做离线 harness：
 - 使用 explicit parenthesized joins 和 `disabled_optimizers='join_order'` 尝试控制 join order。
 - 使用 `EXPLAIN` 和 profiling 验证计划与运行时。
 - 不改 `src/optimizer/`。
+
+R3 之后的 large-join 方向收窄为：
+
+- DuckDB `PlanEnumerator` 当前在 relation count `>= 12` 时直接进入 approximate greedy pair merge。
+- `n <= 12` 的 exact DPhyp 不作为 ADL-OPT 优化目标。
+- ADL-OPT 第一版只通过 JSON 文件交换信息，不把模型放进 DuckDB 内核。
+- 线性化算法暂不实现；先用 fixture linear order 验证 endpoint append 决策。
 
 ## 相关 DuckDB 文件
 
@@ -37,14 +44,26 @@ DuckDB optimizer extension 可以在内置 optimizer 之前或之后修改 logic
 
 ## 未来 in-tree 方向
 
-v0 之后可以规划一个 experimental learned enumerator：
+v0 之后可以规划一个 experimental large-join bridge：
 
-- 从 `QueryGraphManager` 读取 relation sets 和 edges。
-- 通过一个小接口请求 transition score。
-- 若 scorer 不可用，回退 DuckDB default enumerator。
+- 从 `QueryGraphManager` 读取 relation ids、aliases、join edges、filters、estimated cardinality 和 cost feature。
+- 将 large-join graph 导出为 JSON。
+- 从外部 ADL-OPT JSON 读取 linear order 和 endpoint append path。
+- 只在 `n > 12` approximate path 中尝试使用 ADL-OPT path。
+- 若 JSON 缺失、无效或 relation count 不满足阈值，回退 DuckDB 当前 enumerator。
 - 用 setting 或 build flag 控制启用。
 
 这个方向必须另起执行计划，因为它会改变 DuckDB optimizer 行为。
+
+## JSON 交换边界
+
+第一版不新增 DuckDB public API。推荐用调试 setting 或本地实验 build flag 指定：
+
+- export path：DuckDB 写出 query graph JSON。
+- decision path：DuckDB 读取 ADL-OPT 输出的 order/path JSON。
+- mode：`off`、`export_only`、`apply_if_valid`。
+
+JSON 失败必须 fail closed：记录错误，回退 DuckDB 当前策略，而不是生成不完整计划。
 
 ## v0 Plan-Control 注意点
 

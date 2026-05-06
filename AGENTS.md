@@ -17,7 +17,7 @@ This file is intentionally short. Keep durable project knowledge in the linked d
 - Completed execution plans: `docs/exec-plans/completed/`
 - Generated maps and experiment artifacts: `docs/generated/`
 - PR and branch workflow: `docs/design-docs/pr-flow.md`
-- Offline harness script: `scripts/adl_opt/offline_tpch_harness.py`
+- Offline harness scripts: `scripts/adl_opt/offline_tpch_harness.py`, `scripts/adl_opt/offline_large_join_harness.py`
 - Paper summaries and terminology: `docs/references/`
 - Quality, reliability, security: `docs/QUALITY_SCORE.md`, `docs/RELIABILITY.md`, `docs/SECURITY.md`
 
@@ -26,9 +26,10 @@ This file is intentionally short. Keep durable project knowledge in the linked d
 The current phase is a research harness, not a DuckDB behavior change.
 
 - Do not modify DuckDB public APIs or C++ optimizer behavior for ADL-OPT v0.
-- Use TPC-H small scale as the first workload, preferably SF 0.1 and fallback SF 0.01.
+- Use TPC-H small scale for execution smoke tests, preferably SF 0.1 and fallback SF 0.01.
+- Use JOB/IMDB 29/28/33 static artifacts for the n>12 large-join direction.
 - Focus first on offline plan/data collection, connected join-state enumeration, profiling, and JSONL artifacts.
-- v0 hint means: append one adjacent relation to the current connected join subset. A complete hint path is a join order.
+- v0 hint means: append one adjacent relation to the current connected join subset. Large-join follow-up narrows this to endpoint append over an existing linear order.
 - Do not use global optimizer rule switches as the primary hint representation for ADL-OPT v0.
 
 ## Common Commands
@@ -67,6 +68,12 @@ Generate static ADL-OPT v0 TPC-H JSONL artifacts:
 
 ```bash
 python3 scripts/adl_opt/offline_tpch_harness.py --output /tmp/adl-opt-run --queries q03 q05 q08
+```
+
+Generate static ADL-OPT n>12 JOB/IMDB artifacts:
+
+```bash
+python3 scripts/adl_opt/offline_large_join_harness.py --output /tmp/adl-opt-large-static
 ```
 
 ## DuckDB Navigation
