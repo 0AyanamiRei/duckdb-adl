@@ -16,6 +16,7 @@ This file is intentionally short. Keep durable project knowledge in the linked d
 - Active execution plans: `docs/exec-plans/active/`
 - Completed execution plans: `docs/exec-plans/completed/`
 - Generated maps and experiment artifacts: `docs/generated/`
+- PR and branch workflow: `docs/design-docs/pr-flow.md`
 - Offline harness script: `scripts/adl_opt/offline_tpch_harness.py`
 - Paper summaries and terminology: `docs/references/`
 - Quality, reliability, security: `docs/QUALITY_SCORE.md`, `docs/RELIABILITY.md`, `docs/SECURITY.md`
@@ -90,6 +91,7 @@ Start optimizer tracing at:
 ## Editing Rules for Agents
 
 - Preserve `CLAUDE.md`; it is a source reference, not the active Codex map.
+- Use feature branches and PRs into `origin/main` for non-trivial ADL-OPT changes.
 - Keep ADL-OPT docs bilingual-friendly: Chinese body, English TL;DR, `Updated:` line, and key terms.
 - Do not overwrite root `SECURITY.md`; ADL-OPT-specific security notes belong in `docs/SECURITY.md`.
 - Use `rg` for search.
