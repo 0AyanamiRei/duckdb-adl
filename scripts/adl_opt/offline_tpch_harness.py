@@ -10,9 +10,12 @@ provided.
 from __future__ import annotations
 
 import argparse
+import csv
 import hashlib
+import io
 import itertools
 import json
+import math
 import random
 import re
 import subprocess
@@ -161,6 +164,8 @@ QUERY_SPECS: dict[str, QuerySpec] = {
         ),
     ),
 }
+
+TPC_H_TABLES = ("customer", "lineitem", "nation", "orders", "part", "partsupp", "region", "supplier")
 
 
 def sha256_text(text: str) -> str:
@@ -338,35 +343,245 @@ def write_jsonl(path: Path, rows: Iterable[dict]) -> None:
             f.write(json.dumps(row, sort_keys=True) + "\n")
 
 
-def duckdb_run(duckdb: Path, database: Path, sql: str, timeout: int) -> tuple[int, str, str, float]:
-    cmd = [str(duckdb), str(database), "-csv", "-c", sql]
+def duckdb_run(
+    duckdb: Path,
+    database: Path,
+    sql: str,
+    timeout: int,
+    *,
+    csv_output: bool = True,
+) -> tuple[int, str, str, float]:
+    cmd = [str(duckdb), str(database)]
+    if csv_output:
+        cmd.append("-csv")
+    cmd.extend(["-c", sql])
     start = time.perf_counter()
     proc = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
     latency_ms = (time.perf_counter() - start) * 1000
     return proc.returncode, proc.stdout, proc.stderr, latency_ms
 
 
-def fixed_order_session_sql(sql: str) -> str:
-    return "SET disabled_optimizers='join_order';\n" + sql
+def disabled_optimizers_for_mode(mode: str) -> str:
+    if mode == "validation":
+        return "join_order,build_side_probe_side"
+    return "join_order"
 
 
-def ensure_tpch_data(duckdb: Path, database: Path, scale_factor: float, timeout: int) -> None:
+def session_sql(sql: str, args: argparse.Namespace, *, fixed_order: bool, profile_json: Path | None = None) -> str:
+    statements = [f"SET threads={args.threads};"]
+    if fixed_order:
+        statements.append(f"SET disabled_optimizers='{disabled_optimizers_for_mode(args.plan_control_mode)}';")
+    if profile_json is not None:
+        statements.extend(
+            [
+                "PRAGMA enable_profiling='json';",
+                f"PRAGMA profiling_output='{profile_json.as_posix()}';",
+            ]
+        )
+    statements.append(sql.rstrip().rstrip(";") + ";")
+    return "\n".join(statements)
+
+
+def explain_session_sql(sql: str, args: argparse.Namespace, *, fixed_order: bool) -> str:
+    statements = [f"SET threads={args.threads};"]
+    if fixed_order:
+        statements.append(f"SET disabled_optimizers='{disabled_optimizers_for_mode(args.plan_control_mode)}';")
+    statements.append("EXPLAIN " + sql.rstrip().rstrip(";") + ";")
+    return "\n".join(statements)
+
+
+def explain_json_session_sql(sql: str, args: argparse.Namespace, *, fixed_order: bool) -> str:
+    statements = [f"SET threads={args.threads};"]
+    if fixed_order:
+        statements.append(f"SET disabled_optimizers='{disabled_optimizers_for_mode(args.plan_control_mode)}';")
+    statements.append("EXPLAIN (FORMAT JSON) " + sql.rstrip().rstrip(";") + ";")
+    return "\n".join(statements)
+
+
+def tpch_tables_exist(duckdb: Path, database: Path, timeout: int) -> bool:
+    table_list = ",".join(f"'{table}'" for table in TPC_H_TABLES)
+    sql = f"SELECT COUNT(*) AS table_count FROM information_schema.tables WHERE table_name IN ({table_list});"
+    code, out, _, _ = duckdb_run(duckdb, database, sql, timeout)
+    if code != 0:
+        return False
+    rows = list(csv.reader(io.StringIO(out)))
+    if len(rows) < 2 or not rows[1]:
+        return False
+    return rows[1][0] == str(len(TPC_H_TABLES))
+
+
+def ensure_tpch_data(duckdb: Path, database: Path, scale_factor: float, timeout: int, force_reload: bool) -> None:
+    if force_reload and database.exists():
+        database.unlink()
+    if not force_reload and tpch_tables_exist(duckdb, database, timeout):
+        return
     sql = f"LOAD tpch; CALL dbgen(sf={scale_factor});"
-    duckdb_run(duckdb, database, sql, timeout)
+    code, _, err, _ = duckdb_run(duckdb, database, sql, timeout, csv_output=False)
+    if code != 0:
+        raise RuntimeError(err.strip() or "failed to generate TPC-H data")
 
 
 def result_checksum(csv_text: str) -> tuple[int, str]:
-    lines = [line for line in csv_text.splitlines() if line]
-    # DuckDB CSV output includes a header for SELECT results.
-    row_count = max(0, len(lines) - 1)
-    return row_count, sha256_text("\n".join(lines))
+    rows = list(csv.reader(io.StringIO(csv_text)))
+    if not rows:
+        return 0, sha256_text("")
+    data_rows = rows[1:]
+    normalized_rows = sorted(json.dumps(row, ensure_ascii=True, separators=(",", ":")) for row in data_rows)
+    return len(data_rows), sha256_text("\n".join(normalized_rows))
 
 
-def explain_hash(duckdb: Path, database: Path, sql: str, timeout: int) -> tuple[str | None, bool, str | None]:
-    code, out, err, _ = duckdb_run(duckdb, database, "EXPLAIN " + sql.rstrip().rstrip(";"), timeout)
+def parse_explain_json_output(text: str) -> object | None:
+    starts = [idx for idx in (text.find("["), text.find("{")) if idx >= 0]
+    if not starts:
+        return None
+    try:
+        return json.loads(text[min(starts) :])
+    except json.JSONDecodeError:
+        return None
+
+
+def scan_table_name(node: dict) -> str | None:
+    extra_info = node.get("extra_info")
+    if not isinstance(extra_info, dict):
+        return None
+    table = extra_info.get("Table")
+    if not isinstance(table, str):
+        return None
+    return table.rsplit(".", 1)[-1].strip('"')
+
+
+def collect_join_signatures(node: object) -> tuple[list[str], set[tuple[str, ...]]]:
+    if isinstance(node, list):
+        tables: list[str] = []
+        signatures: set[tuple[str, ...]] = set()
+        for child in node:
+            child_tables, child_signatures = collect_join_signatures(child)
+            tables.extend(child_tables)
+            signatures.update(child_signatures)
+        return tables, signatures
+    if not isinstance(node, dict):
+        return [], set()
+
+    tables = []
+    table = scan_table_name(node)
+    if table:
+        tables.append(table)
+    signatures = set()
+    for child in node.get("children", []):
+        child_tables, child_signatures = collect_join_signatures(child)
+        tables.extend(child_tables)
+        signatures.update(child_signatures)
+    if "JOIN" in str(node.get("name", "")).upper() and len(tables) >= 2:
+        signatures.add(tuple(sorted(tables)))
+    return tables, signatures
+
+
+def expected_join_signatures(spec: QuerySpec, path: list[str]) -> set[tuple[str, ...]]:
+    alias_to_table = {alias.alias: alias.table for alias in spec.aliases}
+    joined_tables: list[str] = []
+    signatures: set[tuple[str, ...]] = set()
+    for alias in path:
+        joined_tables.append(alias_to_table[alias])
+        if len(joined_tables) >= 2:
+            signatures.add(tuple(sorted(joined_tables)))
+    return signatures
+
+
+def validate_join_order_shape(
+    duckdb: Path,
+    database: Path,
+    sql: str,
+    args: argparse.Namespace,
+    spec: QuerySpec,
+    join_path: list[str],
+) -> tuple[bool, str | None]:
+    code, out, err, _ = duckdb_run(
+        duckdb,
+        database,
+        explain_json_session_sql(sql, args, fixed_order=True),
+        args.timeout,
+        csv_output=False,
+    )
+    if code != 0:
+        return False, err.strip() or "JSON EXPLAIN failed"
+    data = parse_explain_json_output(out)
+    if data is None:
+        return False, "JSON EXPLAIN output could not be parsed"
+    _, actual = collect_join_signatures(data)
+    expected = expected_join_signatures(spec, join_path)
+    missing = expected - actual
+    if missing:
+        return False, f"join subtree signatures missing: {sorted(missing)}"
+    return True, None
+
+
+def explain_hash(
+    duckdb: Path,
+    database: Path,
+    sql: str,
+    args: argparse.Namespace,
+    *,
+    fixed_order: bool,
+    spec: QuerySpec | None = None,
+    join_path: list[str] | None = None,
+    validate_shape: bool = False,
+) -> tuple[str | None, bool, str | None]:
+    code, out, err, _ = duckdb_run(duckdb, database, explain_session_sql(sql, args, fixed_order=fixed_order), args.timeout)
     if code != 0:
         return None, False, err.strip() or "EXPLAIN failed"
+    if validate_shape and spec is not None and join_path:
+        plan_valid, plan_error = validate_join_order_shape(duckdb, database, sql, args, spec, join_path)
+        return sha256_text(out), plan_valid, plan_error
     return sha256_text(out), True, None
+
+
+def percentile(values: list[float], p: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return ordered[0]
+    rank = (len(ordered) - 1) * p
+    lower = math.floor(rank)
+    upper = math.ceil(rank)
+    if lower == upper:
+        return ordered[lower]
+    return ordered[lower] + (ordered[upper] - ordered[lower]) * (rank - lower)
+
+
+def profile_metrics(profile_path: Path) -> tuple[float | None, float | None]:
+    if not profile_path.exists():
+        return None, None
+    try:
+        data = json.loads(profile_path.read_text())
+    except json.JSONDecodeError:
+        return None, None
+
+    optimizer_time = None
+    execution_time = None
+
+    def visit(node: object) -> None:
+        nonlocal optimizer_time, execution_time
+        if isinstance(node, dict):
+            name = str(node.get("name") or node.get("operator_name") or node.get("extra_info") or "").lower()
+            timing = node.get("timing", node.get("operator_timing", node.get("latency")))
+            if isinstance(timing, (int, float)):
+                timing_ms = float(timing) * 1000 if timing < 1000 else float(timing)
+                if "optimizer" in name:
+                    optimizer_time = (optimizer_time or 0.0) + timing_ms
+                elif execution_time is None and ("query" in name or "total" in name):
+                    execution_time = timing_ms
+            for value in node.values():
+                visit(value)
+        elif isinstance(node, list):
+            for value in node:
+                visit(value)
+
+    visit(data)
+    latency = data.get("latency") if isinstance(data, dict) else None
+    if execution_time is None and isinstance(latency, (int, float)):
+        execution_time = float(latency) * 1000 if latency < 1000 else float(latency)
+    return optimizer_time, execution_time
 
 
 def build_rows(repo: Path, specs: list[QuerySpec], scale_factor: float, seed: int, random_orders: int) -> dict[str, list[dict]]:
@@ -425,23 +640,28 @@ def build_rows(repo: Path, specs: list[QuerySpec], scale_factor: float, seed: in
         for idx in range(random_orders):
             variants.append((f"random_valid_{idx}", "random_valid", random_valid_order(spec, rng), seed + idx))
         for variant_id, baseline_kind, path, variant_seed in variants:
+            variant_text = sql if baseline_kind in {"duckdb_default", "sql_original"} else variant_sql(repo, spec, path)
             rows["run_result"].append(
                 {
                     "query_id": spec.query_id,
                     "variant_id": f"{spec.query_id}:{variant_id}",
                     "baseline_kind": baseline_kind,
                     "join_path": path,
-                    "sql_hash": sha256_text(
-                        sql if baseline_kind in {"duckdb_default", "sql_original"} else variant_sql(repo, spec, path)
-                    ),
+                    "sql_hash": sha256_text(variant_text),
                     "explain_hash": None,
-                    "plan_control_valid": baseline_kind == "duckdb_default",
+                    "plan_control_valid": False,
                     "correct": False,
                     "row_count": None,
                     "result_checksum": None,
                     "latency_ms": None,
+                    "latency_p50_ms": None,
+                    "latency_p95_ms": None,
+                    "latency_samples_ms": [],
                     "optimizer_time_ms": None,
                     "execution_time_ms": None,
+                    "source_variant_id": None,
+                    "speedup_vs_default": None,
+                    "regret_vs_sampled_oracle": None,
                     "timeout": False,
                     "failure_reason": "not_executed",
                 }
@@ -475,48 +695,138 @@ def execute_rows(repo: Path, rows: dict[str, list[dict]], specs: list[QuerySpec]
         return
     duckdb = Path(args.duckdb)
     database = Path(args.database)
-    ensure_tpch_data(duckdb, database, args.scale_factor, args.timeout)
+    profile_dir = Path(args.output).resolve() / "profiles"
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    ensure_tpch_data(duckdb, database, args.scale_factor, args.timeout, args.force_reload)
     spec_by_id = {spec.query_id: spec for spec in specs}
     default_results: dict[str, tuple[int, str]] = {}
+    default_latency: dict[str, float] = {}
     for row in rows["run_result"]:
         spec = spec_by_id[row["query_id"]]
+        fixed_order = row["baseline_kind"] != "duckdb_default"
         if row["baseline_kind"] in {"duckdb_default", "sql_original"}:
             sql = read_sql(repo, spec)
         else:
-            sql = fixed_order_session_sql(variant_sql(repo, spec, row["join_path"]))
+            sql = variant_sql(repo, spec, row["join_path"])
         try:
-            explain, plan_valid, explain_error = explain_hash(duckdb, database, sql, args.timeout)
-            code, out, err, latency_ms = duckdb_run(duckdb, database, sql, args.timeout)
+            explain, plan_valid, explain_error = explain_hash(
+                duckdb,
+                database,
+                sql,
+                args,
+                fixed_order=fixed_order,
+                spec=spec,
+                join_path=row["join_path"],
+                validate_shape=row["baseline_kind"] in {"cardinality_heuristic", "random_valid"},
+            )
+            for _ in range(args.warmup_runs):
+                duckdb_run(
+                    duckdb,
+                    database,
+                    session_sql(sql, args, fixed_order=fixed_order),
+                    args.timeout,
+                )
+            samples: list[float] = []
+            last_code = 0
+            last_out = ""
+            last_err = ""
+            optimizer_times: list[float] = []
+            execution_times: list[float] = []
+            for run_idx in range(args.measure_runs):
+                profile_path = profile_dir / f"{row['variant_id'].replace(':', '_')}_run{run_idx}.json"
+                if profile_path.exists():
+                    profile_path.unlink()
+                last_code, last_out, last_err, latency_ms = duckdb_run(
+                    duckdb,
+                    database,
+                    session_sql(sql, args, fixed_order=fixed_order, profile_json=profile_path),
+                    args.timeout,
+                )
+                samples.append(latency_ms)
+                opt_time, exec_time = profile_metrics(profile_path)
+                if opt_time is not None:
+                    optimizer_times.append(opt_time)
+                if exec_time is not None:
+                    execution_times.append(exec_time)
+                if last_code != 0:
+                    break
         except subprocess.TimeoutExpired:
             row.update({"timeout": True, "failure_reason": "timeout"})
             continue
         row["explain_hash"] = explain
         row["plan_control_valid"] = row["baseline_kind"] == "duckdb_default" or plan_valid
-        row["latency_ms"] = latency_ms
-        if code != 0:
-            row["failure_reason"] = err.strip() or explain_error or "execution failed"
+        row["latency_samples_ms"] = samples
+        row["latency_p50_ms"] = percentile(samples, 0.50)
+        row["latency_p95_ms"] = percentile(samples, 0.95)
+        row["latency_ms"] = row["latency_p50_ms"]
+        row["optimizer_time_ms"] = percentile(optimizer_times, 0.50)
+        row["execution_time_ms"] = percentile(execution_times, 0.50)
+        if last_code != 0:
+            row["failure_reason"] = last_err.strip() or explain_error or "execution failed"
             continue
-        checksum = result_checksum(out)
+        checksum = result_checksum(last_out)
         row["row_count"], row["result_checksum"] = checksum
         if row["baseline_kind"] == "duckdb_default":
             default_results[row["query_id"]] = checksum
+            if row["latency_ms"] is not None:
+                default_latency[row["query_id"]] = row["latency_ms"]
             row["correct"] = True
             row["failure_reason"] = None
         else:
             row["correct"] = default_results.get(row["query_id"]) == checksum
             row["failure_reason"] = None if row["correct"] else "checksum_mismatch"
+        if row["correct"] and row["plan_control_valid"] and row["latency_ms"] is not None:
+            baseline = default_latency.get(row["query_id"])
+            if baseline:
+                row["speedup_vs_default"] = baseline / row["latency_ms"]
+
+
+def grouped_run_rows(run_rows: list[dict]) -> dict[str, list[dict]]:
+    grouped: dict[str, list[dict]] = {}
+    for row in run_rows:
+        grouped.setdefault(row["query_id"], []).append(row)
+    return grouped
 
 
 def write_summary(output: Path, rows: dict[str, list[dict]], executed: bool) -> None:
     run_rows = rows["run_result"]
+    per_query = {}
+    for query_id, query_rows in grouped_run_rows(run_rows).items():
+        attempted = [row for row in query_rows if row["failure_reason"] != "not_executed"]
+        comparable = [
+            row
+            for row in attempted
+            if row["correct"] and row["plan_control_valid"] and row["latency_ms"] is not None
+        ]
+        default_row = next((row for row in query_rows if row["baseline_kind"] == "duckdb_default"), None)
+        oracle_row = min(comparable, key=lambda row: row["latency_ms"], default=None)
+        default_latency = default_row.get("latency_ms") if default_row else None
+        oracle_latency = oracle_row.get("latency_ms") if oracle_row else None
+        per_query[query_id] = {
+            "default_latency_ms": default_latency,
+            "sampled_oracle_variant_id": oracle_row.get("variant_id") if oracle_row else None,
+            "sampled_oracle_latency_ms": oracle_latency,
+            "sampled_oracle_speedup_vs_default": (
+                default_latency / oracle_latency if default_latency and oracle_latency else None
+            ),
+            "comparable_variant_count": len(comparable),
+            "failed_variant_count": len(attempted) - len(comparable),
+        }
+        if oracle_row:
+            for row in query_rows:
+                if row["correct"] and row["plan_control_valid"] and row["latency_ms"] is not None:
+                    row["regret_vs_sampled_oracle"] = row["latency_ms"] / oracle_row["latency_ms"] - 1.0
     summary = {
         "updated": UPDATED,
         "executed": executed,
         "query_count": len({row["query_id"] for row in rows["query_graph"]}),
         "variant_count": len(run_rows),
         "correctness_failures": sum(1 for row in run_rows if row["failure_reason"] not in (None, "not_executed")),
-        "plan_control_failures": sum(1 for row in run_rows if not row["plan_control_valid"]),
+        "plan_control_failures": sum(
+            1 for row in run_rows if row["failure_reason"] != "not_executed" and not row["plan_control_valid"]
+        ),
         "timeout_count": sum(1 for row in run_rows if row["timeout"]),
+        "per_query": per_query,
         "jsonl_files": [f"{name}.jsonl" for name in ["query_graph", "state", "transition", "run_result", "decision"]],
     }
     (output / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
@@ -535,7 +845,17 @@ def write_summary(output: Path, rows: dict[str, list[dict]], executed: bool) -> 
         f"- Correctness failures: {summary['correctness_failures']}",
         f"- Plan-control failures: {summary['plan_control_failures']}",
         f"- Timeout count: {summary['timeout_count']}",
+        "",
+        "## Per Query",
+        "",
     ]
+    for query_id, stats in per_query.items():
+        lines.append(
+            f"- {query_id}: comparable={stats['comparable_variant_count']}, "
+            f"failed={stats['failed_variant_count']}, "
+            f"oracle={stats['sampled_oracle_variant_id']}, "
+            f"oracle_speedup={stats['sampled_oracle_speedup_vs_default']}"
+        )
     (output / "summary.md").write_text("\n".join(lines) + "\n")
 
 
@@ -544,13 +864,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--repo", default=".", help="DuckDB repository root")
     parser.add_argument("--output", required=True, help="Output directory")
     parser.add_argument("--queries", nargs="+", default=["q03", "q05", "q08"], choices=sorted(QUERY_SPECS))
-    parser.add_argument("--scale-factor", type=float, default=0.1)
+    parser.add_argument("--scale-factor", type=float, default=0.01)
     parser.add_argument("--random-orders", type=int, default=5)
     parser.add_argument("--seed", type=int, default=20260506)
     parser.add_argument("--duckdb", help="Optional DuckDB CLI/binary path")
     parser.add_argument("--database", default="/tmp/adl-opt-tpch.duckdb")
     parser.add_argument("--execute", action="store_true", help="Execute variants using --duckdb")
     parser.add_argument("--timeout", type=int, default=120)
+    parser.add_argument("--threads", type=int, default=1)
+    parser.add_argument("--warmup-runs", type=int, default=1)
+    parser.add_argument("--measure-runs", type=int, default=5)
+    parser.add_argument("--plan-control-mode", choices=["performance", "validation"], default="performance")
+    parser.add_argument("--force-reload", action="store_true", help="Regenerate the TPC-H database before execution")
     return parser.parse_args()
 
 
@@ -563,9 +888,9 @@ def main() -> None:
     rows = build_rows(repo, specs, args.scale_factor, args.seed, args.random_orders)
     if args.execute:
         execute_rows(repo, rows, specs, args)
+    write_summary(output, rows, args.execute and bool(args.duckdb))
     for name in ["query_graph", "state", "transition", "run_result", "decision"]:
         write_jsonl(output / f"{name}.jsonl", rows[name])
-    write_summary(output, rows, args.execute and bool(args.duckdb))
 
 
 if __name__ == "__main__":

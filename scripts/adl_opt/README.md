@@ -14,23 +14,40 @@ Static artifact generation, no DuckDB binary required:
 python3 scripts/adl_opt/offline_tpch_harness.py --output /tmp/adl-opt-run --queries q03 q05 q08
 ```
 
-With a DuckDB CLI/binary available:
+Build DuckDB with the TPC-H extension while using roughly 75% CPU:
+
+```bash
+CPU_COUNT=$(nproc 2>/dev/null || sysctl -n hw.ncpu)
+BUILD_JOBS=$(( CPU_COUNT * 75 / 100 ))
+[ "$BUILD_JOBS" -lt 1 ] && BUILD_JOBS=1
+CMAKE_BUILD_PARALLEL_LEVEL=$BUILD_JOBS BUILD_TPCH=1 make reldebug
+```
+
+R1 executable smoke with a DuckDB CLI/binary available:
 
 ```bash
 python3 scripts/adl_opt/offline_tpch_harness.py \
   --duckdb ./build/reldebug/duckdb \
-  --database /tmp/adl-opt-tpch.duckdb \
-  --output /tmp/adl-opt-run \
+  --database /tmp/adl-opt-r1-tpch.duckdb \
+  --output /tmp/adl-opt-r1 \
   --queries q03 q05 q08 \
-  --execute
+  --scale-factor 0.01 \
+  --random-orders 5 \
+  --execute \
+  --threads 1 \
+  --warmup-runs 1 \
+  --measure-runs 5 \
+  --timeout 120
 ```
 
 The execute path assumes the TPC-H extension is available to the binary. If data is not present, the script tries:
 
 ```sql
 LOAD tpch;
-CALL dbgen(sf=0.1);
+CALL dbgen(sf=0.01);
 ```
+
+The database is reused when TPC-H tables already exist. Add `--force-reload` to regenerate it.
 
 ## Outputs
 
@@ -43,3 +60,5 @@ CALL dbgen(sf=0.1);
 - `summary.md`
 
 The schema is documented in `docs/design-docs/feature-and-label-schema.md`.
+
+`run_result.jsonl` stores latency samples, P50/P95 latency, row count, order-independent checksum, `EXPLAIN` hash, and optional profiling-derived optimizer/execution times.
