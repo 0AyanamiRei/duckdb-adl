@@ -1,10 +1,11 @@
 #pragma once
 
+#include "duckdb/common/primitive_dictionary.hpp"
 #include "duckdb/common/typedefs.hpp"
 #include "duckdb/storage/compression/dict_fsst/common.hpp"
 #include "duckdb/storage/compression/dict_fsst/analyze.hpp"
 #include "duckdb/function/compression_function.hpp"
-#include "duckdb/common/string_map_set.hpp"
+#include "duckdb/common/bitpacking.hpp"
 #include "duckdb/storage/table/column_data_checkpointer.hpp"
 
 namespace duckdb {
@@ -38,7 +39,7 @@ public:
 	~DictFSSTCompressionState() override;
 
 public:
-	void CreateEmptySegment(idx_t row_start);
+	void CreateEmptySegment();
 	idx_t Finalize();
 
 	bool AllUnique() const;
@@ -47,14 +48,14 @@ public:
 	DictionaryAppendState TryEncode();
 
 	bool CompressInternal(UnifiedVectorFormat &vector_format, const string_t &str, bool is_null,
-	                      EncodedInput &encoded_input, const idx_t i, idx_t count);
+	                      EncodedInput &encoded_input, const idx_t i, idx_t count, bool fail_on_no_space);
 	void Compress(Vector &scan_vector, idx_t count);
 	void FinalizeCompress();
 	void Flush(bool final);
 
 public:
 	ColumnDataCheckpointData &checkpoint_data;
-	CompressionFunction &function;
+	const CompressionFunction &function;
 	// State regarding current segment
 	unique_ptr<ColumnSegment> current_segment;
 	BufferHandle current_handle;
@@ -75,7 +76,7 @@ public:
 	bitpacking_width_t dictionary_indices_width = 0;
 
 	//! string -> dictionary_index (for lookups)
-	string_map_t<uint32_t> current_string_map;
+	PrimitiveDictionary<string_t> current_string_map;
 	//! strings added to the dictionary waiting to be encoded
 	vector<string_t> dictionary_encoding_buffer;
 	idx_t to_encode_string_sum = 0;

@@ -16,9 +16,13 @@
 namespace duckdb {
 
 Binding::Binding(BindingType binding_type, BindingAlias alias_p, vector<LogicalType> coltypes, vector<string> colnames,
-                 idx_t index)
+                 TableIndex index)
     : binding_type(binding_type), alias(std::move(alias_p)), index(index), types(std::move(coltypes)),
       names(std::move(colnames)) {
+	Initialize();
+}
+
+void Binding::Initialize() {
 	D_ASSERT(types.size() == names.size());
 	for (idx_t i = 0; i < names.size(); i++) {
 		auto &name = names[i];
@@ -28,6 +32,34 @@ Binding::Binding(BindingType binding_type, BindingAlias alias_p, vector<LogicalT
 		}
 		name_map[name] = i;
 	}
+}
+
+BindingType Binding::GetBindingType() {
+	return binding_type;
+}
+
+const BindingAlias &Binding::GetBindingAlias() {
+	return alias;
+}
+
+TableIndex Binding::GetIndex() {
+	return index;
+}
+
+const vector<LogicalType> &Binding::GetColumnTypes() {
+	return types;
+}
+
+const vector<string> &Binding::GetColumnNames() {
+	return names;
+}
+
+idx_t Binding::GetColumnCount() {
+	return GetColumnNames().size();
+}
+
+void Binding::SetColumnType(idx_t col_idx, LogicalType type_p) {
+	types[col_idx] = std::move(type_p);
 }
 
 string Binding::GetAlias() const {
@@ -71,7 +103,7 @@ BindResult Binding::Bind(ColumnRefExpression &colref, idx_t depth) {
 	}
 	ColumnBinding binding;
 	binding.table_index = index;
-	binding.column_index = column_index;
+	binding.column_index = ProjectionIndex(column_index);
 	LogicalType sql_type = types[column_index];
 	if (colref.GetAlias().empty()) {
 		colref.SetAlias(names[column_index]);
@@ -102,7 +134,7 @@ BindingAlias Binding::GetAlias(const string &explicit_alias, optional_ptr<Standa
 	return BindingAlias(*entry);
 }
 
-EntryBinding::EntryBinding(const string &alias, vector<LogicalType> types_p, vector<string> names_p, idx_t index,
+EntryBinding::EntryBinding(const string &alias, vector<LogicalType> types_p, vector<string> names_p, TableIndex index,
                            StandardEntry &entry)
     : Binding(BindingType::CATALOG_ENTRY, GetAlias(alias, entry), std::move(types_p), std::move(names_p), index),
       entry(entry) {
@@ -113,7 +145,7 @@ optional_ptr<StandardEntry> EntryBinding::GetStandardEntry() {
 }
 
 TableBinding::TableBinding(const string &alias, vector<LogicalType> types_p, vector<string> names_p,
-                           vector<ColumnIndex> &bound_column_ids, optional_ptr<StandardEntry> entry, idx_t index,
+                           vector<ColumnIndex> &bound_column_ids, optional_ptr<StandardEntry> entry, TableIndex index,
                            virtual_column_map_t virtual_columns_p)
     : Binding(BindingType::TABLE, GetAlias(alias, entry), std::move(types_p), std::move(names_p), index),
       bound_column_ids(bound_column_ids), entry(entry), virtual_columns(std::move(virtual_columns_p)) {
@@ -127,6 +159,10 @@ TableBinding::TableBinding(const string &alias, vector<LogicalType> types_p, vec
 		}
 		if (idx == COLUMN_IDENTIFIER_EMPTY) {
 			// the empty column cannot be queried by the user
+			continue;
+		}
+		if (idx == COLUMN_IDENTIFIER_ROW_NUMBER) {
+			// the row_number column cannot be queried by the user
 			continue;
 		}
 		if (name_map.find(name) == name_map.end()) {
@@ -205,11 +241,11 @@ ColumnBinding TableBinding::GetColumnBinding(column_t column_index) {
 	ColumnBinding binding;
 
 	// Locate the column_id that matches the 'column_index'
-	binding.column_index = column_ids.size();
+	binding.column_index = ProjectionIndex(column_ids.size());
 	for (idx_t i = 0; i < column_ids.size(); ++i) {
 		auto &col_id = column_ids[i];
 		if (col_id.GetPrimaryIndex() == column_index) {
-			binding.column_index = i;
+			binding.column_index = ProjectionIndex(i);
 			break;
 		}
 	}
@@ -269,7 +305,7 @@ ErrorData TableBinding::ColumnNotFoundError(const string &column_name) const {
 
 DummyBinding::DummyBinding(vector<LogicalType> types, vector<string> names, string dummy_name)
     : Binding(BindingType::DUMMY, BindingAlias(DummyBinding::DUMMY_NAME + dummy_name), std::move(types),
-              std::move(names), DConstants::INVALID_INDEX),
+              std::move(names), TableIndex()),
       dummy_name(std::move(dummy_name)) {
 }
 
@@ -278,7 +314,7 @@ BindResult DummyBinding::Bind(ColumnRefExpression &colref, idx_t depth) {
 	if (!TryGetBindingIndex(colref.GetColumnName(), column_index)) {
 		throw InternalException("Column %s not found in bindings", colref.GetColumnName());
 	}
-	ColumnBinding binding(index, column_index);
+	ColumnBinding binding(index, ProjectionIndex(column_index));
 
 	// we are binding a parameter to create the dummy binding, no arguments are supplied
 	return BindResult(make_uniq<BoundColumnRefExpression>(colref.GetName(), types[column_index], binding, depth));
@@ -289,7 +325,7 @@ BindResult DummyBinding::Bind(LambdaRefExpression &lambdaref, idx_t depth) {
 	if (!TryGetBindingIndex(lambdaref.GetName(), column_index)) {
 		throw InternalException("Column %s not found in bindings", lambdaref.GetName());
 	}
-	ColumnBinding binding(index, column_index);
+	ColumnBinding binding(index, ProjectionIndex(column_index));
 	return BindResult(make_uniq<BoundLambdaRefExpression>(lambdaref.GetName(), types[column_index], binding,
 	                                                      lambdaref.lambda_idx, depth));
 }
@@ -302,6 +338,44 @@ unique_ptr<ParsedExpression> DummyBinding::ParamToArg(ColumnRefExpression &colre
 	auto arg = (*arguments)[column_index]->Copy();
 	arg->SetAlias(colref.GetAlias());
 	return arg;
+}
+
+CTEBinding::CTEBinding(BindingAlias alias, vector<LogicalType> types, vector<string> names, TableIndex index,
+                       CTEType cte_type)
+    : Binding(BindingType::CTE, std::move(alias), std::move(types), std::move(names), index), cte_type(cte_type),
+      reference_count(0) {
+}
+
+CTEBinding::CTEBinding(BindingAlias alias_p, shared_ptr<CTEBindState> bind_state_p, TableIndex index)
+    : Binding(BindingType::CTE, std::move(alias_p), vector<LogicalType>(), vector<string>(), index),
+      cte_type(CTEType::CAN_BE_REFERENCED), reference_count(0), bind_state(std::move(bind_state_p)) {
+}
+
+bool CTEBinding::CanBeReferenced() const {
+	return cte_type == CTEType::CAN_BE_REFERENCED;
+}
+
+bool CTEBinding::IsReferenced() const {
+	return reference_count > 0;
+}
+
+void CTEBinding::Reference() {
+	if (!CanBeReferenced()) {
+		throw InternalException("CTE cannot be referenced!");
+	}
+	if (bind_state) {
+		// we have not bound the CTE yet - bind it
+		bind_state->Bind(*this);
+
+		// copy over the names / types and initialize the binding
+		this->names = bind_state->names;
+		this->types = bind_state->types;
+		Initialize();
+
+		// finalize binding
+		bind_state.reset();
+	}
+	reference_count++;
 }
 
 } // namespace duckdb

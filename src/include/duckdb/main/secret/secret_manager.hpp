@@ -16,9 +16,29 @@
 #include "duckdb/parser/parsed_data/create_secret_info.hpp"
 
 namespace duckdb {
-class SecretManager;
+
+struct BoundStatement;
 struct DBConfig;
+class SecretManager;
 class SchemaCatalogEntry;
+
+//! A Secret Entry in the secret manager
+struct SecretEntry {
+public:
+	explicit SecretEntry(unique_ptr<const BaseSecret> secret) : secret(secret != nullptr ? secret->Clone() : nullptr) {
+	}
+	SecretEntry(const SecretEntry &other)
+	    : persist_type(other.persist_type), storage_mode(other.storage_mode),
+	      secret((other.secret != nullptr) ? other.secret->Clone() : nullptr) {
+	}
+
+	//! Whether the secret is persistent
+	SecretPersistType persist_type;
+	//! The storage backend of the secret
+	string storage_mode;
+	//! The secret pointer
+	unique_ptr<const BaseSecret> secret;
+};
 
 //! Return value of a Secret Lookup
 struct SecretMatch {
@@ -50,24 +70,6 @@ public:
 
 	unique_ptr<SecretEntry> secret_entry;
 	int64_t score;
-};
-
-//! A Secret Entry in the secret manager
-struct SecretEntry {
-public:
-	explicit SecretEntry(unique_ptr<const BaseSecret> secret) : secret(secret != nullptr ? secret->Clone() : nullptr) {
-	}
-	SecretEntry(const SecretEntry &other)
-	    : persist_type(other.persist_type), storage_mode(other.storage_mode),
-	      secret((other.secret != nullptr) ? other.secret->Clone() : nullptr) {
-	}
-
-	//! Whether the secret is persistent
-	SecretPersistType persist_type;
-	//! The storage backend of the secret
-	string storage_mode;
-	//! The secret pointer
-	unique_ptr<const BaseSecret> secret;
 };
 
 struct SecretManagerConfig {
@@ -217,6 +219,9 @@ public:
 	unique_ptr<CatalogEntry> CreateDefaultEntry(CatalogTransaction transaction, const string &entry_name) override;
 	unique_ptr<CatalogEntry> CreateDefaultEntry(ClientContext &context, const string &entry_name) override;
 	vector<string> GetDefaultEntries() override;
+	bool LockDuringCreate() const override {
+		return true;
+	}
 
 protected:
 	unique_ptr<CatalogEntry> CreateDefaultEntryInternal(const string &entry_name);

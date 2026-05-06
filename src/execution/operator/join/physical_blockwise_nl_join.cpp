@@ -217,6 +217,7 @@ InsertionOrderPreservingMap<string> PhysicalBlockwiseNLJoin::ParamsToString() co
 	InsertionOrderPreservingMap<string> result;
 	result["Join Type"] = EnumUtil::ToString(join_type);
 	result["Condition"] = condition->GetName();
+	SetEstimatedCardinality(result, estimated_cardinality);
 	return result;
 }
 
@@ -261,8 +262,8 @@ unique_ptr<LocalSourceState> PhysicalBlockwiseNLJoin::GetLocalSourceState(Execut
 	return make_uniq<BlockwiseNLJoinLocalScanState>(*this, gstate.Cast<BlockwiseNLJoinGlobalScanState>());
 }
 
-SourceResultType PhysicalBlockwiseNLJoin::GetData(ExecutionContext &context, DataChunk &chunk,
-                                                  OperatorSourceInput &input) const {
+SourceResultType PhysicalBlockwiseNLJoin::GetDataInternal(ExecutionContext &context, DataChunk &chunk,
+                                                          OperatorSourceInput &input) const {
 	D_ASSERT(PropagatesBuildSide(join_type));
 	// check if we need to scan any unmatched tuples from the RHS for the full/right outer join
 	auto &sink = sink_state->Cast<BlockwiseNLJoinGlobalState>();

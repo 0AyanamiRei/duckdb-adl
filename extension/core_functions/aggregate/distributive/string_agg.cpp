@@ -113,13 +113,21 @@ struct StringAggFunction {
 	}
 };
 
-unique_ptr<FunctionData> StringAggBind(ClientContext &context, AggregateFunction &function,
-                                       vector<unique_ptr<Expression>> &arguments) {
+unique_ptr<FunctionData> StringAggBind(BindAggregateFunctionInput &input) {
+	auto &context = input.GetClientContext();
+	auto &function = input.GetBoundFunction();
+	auto &arguments = input.GetArguments();
 	if (arguments.size() == 1) {
 		// single argument: default to comma
 		return make_uniq<StringAggBindData>(",");
 	}
 	D_ASSERT(arguments.size() == 2);
+	// Check if any argument is of UNKNOWN type (parameter not yet bound)
+	for (auto &arg : arguments) {
+		if (arg->GetReturnType().id() == LogicalTypeId::UNKNOWN) {
+			throw ParameterNotResolvedException();
+		}
+	}
 	if (arguments[1]->HasParameter()) {
 		throw ParameterNotResolvedException();
 	}
@@ -138,12 +146,12 @@ unique_ptr<FunctionData> StringAggBind(ClientContext &context, AggregateFunction
 }
 
 void StringAggSerialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data_p,
-                        const AggregateFunction &function) {
+                        const BoundAggregateFunction &function) {
 	auto bind_data = bind_data_p->Cast<StringAggBindData>();
 	serializer.WriteProperty(100, "separator", bind_data.sep);
 }
 
-unique_ptr<FunctionData> StringAggDeserialize(Deserializer &deserializer, AggregateFunction &bound_function) {
+unique_ptr<FunctionData> StringAggDeserialize(Deserializer &deserializer, BoundAggregateFunction &bound_function) {
 	auto sep = deserializer.ReadProperty<string>(100, "separator");
 	return make_uniq<StringAggBindData>(std::move(sep));
 }
@@ -160,10 +168,10 @@ AggregateFunctionSet StringAggFun::GetFunctions() {
 	    AggregateFunction::StateCombine<StringAggState, StringAggFunction>,
 	    AggregateFunction::StateFinalize<StringAggState, string_t, StringAggFunction>,
 	    AggregateFunction::UnaryUpdate<StringAggState, string_t, StringAggFunction>, StringAggBind);
-	string_agg_param.serialize = StringAggSerialize;
-	string_agg_param.deserialize = StringAggDeserialize;
+	string_agg_param.SetSerializeCallback(StringAggSerialize);
+	string_agg_param.SetDeserializeCallback(StringAggDeserialize);
 	string_agg.AddFunction(string_agg_param);
-	string_agg_param.arguments.emplace_back(LogicalType::VARCHAR);
+	string_agg_param.GetSignature().AddParameter(LogicalType::VARCHAR);
 	string_agg.AddFunction(string_agg_param);
 	return string_agg;
 }

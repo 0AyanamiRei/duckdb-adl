@@ -1,3 +1,6 @@
+#include "duckdb/common/vector/flat_vector.hpp"
+#include "duckdb/common/vector/fsst_vector.hpp"
+#include "duckdb/common/vector/string_vector.hpp"
 #include "duckdb/common/fsst.hpp"
 
 #include "duckdb/common/bitpacking.hpp"
@@ -5,11 +8,12 @@
 #include "duckdb/common/random_engine.hpp"
 #include "duckdb/function/compression/compression.hpp"
 #include "duckdb/main/config.hpp"
-#include "duckdb/storage/checkpoint/write_overflow_strings_to_disk.hpp"
 #include "duckdb/storage/string_uncompressed.hpp"
 #include "duckdb/storage/table/column_data_checkpointer.hpp"
+#include "duckdb/main/settings.hpp"
 
 #include "fsst.h"
+
 #include "miniz_wrapper.hpp"
 
 namespace duckdb {
@@ -48,7 +52,7 @@ struct FSSTStorage {
 	static void Compress(CompressionState &state_p, Vector &scan_vector, idx_t count);
 	static void FinalizeCompress(CompressionState &state_p);
 
-	static unique_ptr<SegmentScanState> StringInitScan(ColumnSegment &segment);
+	static unique_ptr<SegmentScanState> StringInitScan(const QueryContext &context, ColumnSegment &segment);
 	template <bool ALLOW_FSST_VECTORS = false>
 	static void StringScanPartial(ColumnSegment &segment, ColumnScanState &state, idx_t scan_count, Vector &result,
 	                              idx_t result_offset);
@@ -139,11 +143,7 @@ bool FSSTStorage::StringAnalyze(AnalyzeState &state_p, Vector &input, idx_t coun
 
 		if (string_size > 0) {
 			state.have_valid_row = true;
-			if (data[idx].IsInlined()) {
-				state.fsst_strings.push_back(data[idx]);
-			} else {
-				state.fsst_strings.emplace_back(state.fsst_string_heap.AddBlob(data[idx]));
-			}
+			state.fsst_strings.emplace_back(state.fsst_string_heap.AddBlob(data[idx]));
 			state.fsst_string_total_size += string_size;
 		} else {
 			state.empty_strings++;
@@ -217,7 +217,7 @@ public:
 	FSSTCompressionState(ColumnDataCheckpointData &checkpoint_data, const CompressionInfo &info)
 	    : CompressionState(info), checkpoint_data(checkpoint_data),
 	      function(checkpoint_data.GetCompressionFunction(CompressionType::COMPRESSION_FSST)) {
-		CreateEmptySegment(checkpoint_data.GetRowGroup().start);
+		CreateEmptySegment();
 	}
 
 	~FSSTCompressionState() override {
@@ -236,15 +236,15 @@ public:
 		auto &buffer_manager = BufferManager::GetBufferManager(current_segment->db);
 		current_handle = buffer_manager.Pin(current_segment->block);
 		current_dictionary = FSSTStorage::GetDictionary(*current_segment, current_handle);
-		current_end_ptr = current_handle.Ptr() + current_dictionary.end;
+		current_end_ptr = current_handle.GetDataMutable() + current_dictionary.end;
 	}
 
-	void CreateEmptySegment(idx_t row_start) {
+	void CreateEmptySegment() {
 		auto &db = checkpoint_data.GetDatabase();
 		auto &type = checkpoint_data.GetType();
 
-		auto compressed_segment = ColumnSegment::CreateTransientSegment(db, function, type, row_start,
-		                                                                info.GetBlockSize(), info.GetBlockManager());
+		auto compressed_segment =
+		    ColumnSegment::CreateTransientSegment(db, function, type, info.GetBlockSize(), info.GetBlockManager());
 		current_segment = std::move(compressed_segment);
 		Reset();
 	}
@@ -274,7 +274,7 @@ public:
 		current_segment->count++;
 	}
 
-	void AddNull() {
+	void AddEmptyStringInternal() {
 		if (!HasEnoughSpace(0)) {
 			Flush();
 			if (!HasEnoughSpace(0)) {
@@ -285,8 +285,13 @@ public:
 		current_segment->count++;
 	}
 
+	void AddNull() {
+		AddEmptyStringInternal();
+		current_segment->stats.statistics.SetHasNullFast();
+	}
+
 	void AddEmptyString() {
-		AddNull();
+		AddEmptyStringInternal();
 		UncompressedStringStorage::UpdateStringStats(current_segment->stats, "");
 	}
 
@@ -321,14 +326,12 @@ public:
 	}
 
 	void Flush(bool final = false) {
-		auto next_start = current_segment->start + current_segment->count;
-
 		auto segment_size = Finalize();
 		auto &state = checkpoint_data.GetCheckpointState();
 		state.FlushSegment(std::move(current_segment), std::move(current_handle), segment_size);
 
 		if (!final) {
-			CreateEmptySegment(next_start);
+			CreateEmptySegment();
 		}
 	}
 
@@ -349,7 +352,7 @@ public:
 		}
 
 		// calculate ptr and offsets
-		auto base_ptr = handle.Ptr();
+		auto base_ptr = handle.GetDataMutable();
 		auto header_ptr = reinterpret_cast<fsst_compression_header_t *>(base_ptr);
 		auto compressed_index_buffer_offset = sizeof(fsst_compression_header_t);
 		auto symbol_table_offset = compressed_index_buffer_offset + compressed_index_buffer_size;
@@ -394,7 +397,7 @@ public:
 	}
 
 	ColumnDataCheckpointData &checkpoint_data;
-	CompressionFunction &function;
+	const CompressionFunction &function;
 
 	// State regarding current segment
 	unique_ptr<ColumnSegment> current_segment;
@@ -448,7 +451,8 @@ void FSSTStorage::Compress(CompressionState &state_p, Vector &scan_vector, idx_t
 		auto idx = vdata.sel->get_index(i);
 
 		// Note: we treat nulls and empty strings the same
-		if (!vdata.validity.RowIsValid(idx) || data[idx].GetSize() == 0) {
+		const bool is_null = !vdata.validity.RowIsValid(idx);
+		if (is_null || data[idx].GetSize() == 0) {
 			continue;
 		}
 
@@ -550,7 +554,7 @@ struct FSSTScanState : public StringScanState {
 	}
 	inline string_t DecompressString(StringDictionaryContainer dict, data_ptr_t baseptr,
 	                                 const bp_delta_offsets_t &offsets, idx_t index,
-	                                 VectorStringBuffer &str_buffer) const {
+	                                 ArenaAllocator &str_allocator) const {
 		uint32_t str_len = bitunpack_buffer[offsets.scan_offset + index];
 		auto str_ptr = FSSTStorage::FetchStringPointer(
 		    dict, baseptr,
@@ -562,18 +566,18 @@ struct FSSTScanState : public StringScanState {
 		if (all_values_inlined) {
 			return FSSTPrimitives::DecompressInlinedValue(duckdb_fsst_decoder_ptr, str_ptr, str_len);
 		} else {
-			return FSSTPrimitives::DecompressValue(duckdb_fsst_decoder_ptr, str_buffer, str_ptr, str_len);
+			return FSSTPrimitives::DecompressValue(duckdb_fsst_decoder_ptr, str_allocator, str_ptr, str_len);
 		}
 	}
 };
 
-unique_ptr<SegmentScanState> FSSTStorage::StringInitScan(ColumnSegment &segment) {
-	auto block_size = segment.GetBlockManager().GetBlockSize();
+unique_ptr<SegmentScanState> FSSTStorage::StringInitScan(const QueryContext &context, ColumnSegment &segment) {
+	auto block_size = segment.GetBlockSize();
 	auto string_block_limit = StringUncompressed::GetStringBlockLimit(block_size);
 	auto state = make_uniq<FSSTScanState>(string_block_limit);
 	auto &buffer_manager = BufferManager::GetBufferManager(segment.db);
 	state->handle = buffer_manager.Pin(segment.block);
-	auto base_ptr = state->handle.Ptr() + segment.GetBlockOffset();
+	auto base_ptr = state->handle.GetDataMutable() + segment.GetBlockOffset();
 
 	state->duckdb_fsst_decoder = make_buffer<duckdb_fsst_decoder_t>();
 	auto decoder = reinterpret_cast<duckdb_fsst_decoder_t *>(state->duckdb_fsst_decoder.get());
@@ -583,8 +587,9 @@ unique_ptr<SegmentScanState> FSSTStorage::StringInitScan(ColumnSegment &segment)
 	}
 	state->duckdb_fsst_decoder_ptr = state->duckdb_fsst_decoder.get();
 
-	if (StringStats::HasMaxStringLength(segment.stats.statistics)) {
-		state->all_values_inlined = StringStats::MaxStringLength(segment.stats.statistics) <= string_t::INLINE_LENGTH;
+	const auto &stats = segment.stats.statistics;
+	if (stats.GetStatsType() == StatisticsType::STRING_STATS && StringStats::HasMaxStringLength(stats)) {
+		state->all_values_inlined = StringStats::MaxStringLength(stats) <= string_t::INLINE_LENGTH;
 	}
 
 	return std::move(state);
@@ -638,19 +643,17 @@ void FSSTStorage::EndScan(FSSTScanState &scan_state, bp_delta_offsets_t &offsets
 template <bool ALLOW_FSST_VECTORS>
 void FSSTStorage::StringScanPartial(ColumnSegment &segment, ColumnScanState &state, idx_t scan_count, Vector &result,
                                     idx_t result_offset) {
-
 	auto &scan_state = state.scan_state->Cast<FSSTScanState>();
-	auto start = segment.GetRelativeIndex(state.row_index);
+	auto start = state.GetPositionInSegment();
 
 	bool enable_fsst_vectors;
 	if (ALLOW_FSST_VECTORS) {
-		auto &config = DBConfig::GetConfig(segment.db);
-		enable_fsst_vectors = config.options.enable_fsst_vectors;
+		enable_fsst_vectors = Settings::Get<EnableFSSTVectorsSetting>(segment.db);
 	} else {
 		enable_fsst_vectors = false;
 	}
 
-	auto baseptr = scan_state.handle.Ptr() + segment.GetBlockOffset();
+	auto baseptr = scan_state.handle.GetDataMutable() + segment.GetBlockOffset();
 	auto dict = GetDictionary(segment, scan_state.handle);
 	auto base_data = data_ptr_cast(baseptr + sizeof(fsst_compression_header_t));
 	string_t *result_data;
@@ -663,17 +666,16 @@ void FSSTStorage::StringScanPartial(ColumnSegment &segment, ColumnScanState &sta
 		D_ASSERT(result_offset == 0);
 		if (scan_state.duckdb_fsst_decoder) {
 			D_ASSERT(result_offset == 0 || result.GetVectorType() == VectorType::FSST_VECTOR);
-			result.SetVectorType(VectorType::FSST_VECTOR);
-			auto string_block_limit = StringUncompressed::GetStringBlockLimit(segment.GetBlockManager().GetBlockSize());
-			FSSTVector::RegisterDecoder(result, scan_state.duckdb_fsst_decoder, string_block_limit);
-			result_data = FSSTVector::GetCompressedData<string_t>(result);
+			auto string_block_limit = StringUncompressed::GetStringBlockLimit(segment.GetBlockSize());
+			FSSTVector::Create(result, scan_state.duckdb_fsst_decoder, string_block_limit, scan_count);
+			result_data = FSSTVector::GetCompressedData(result);
 		} else {
 			D_ASSERT(result.GetVectorType() == VectorType::FLAT_VECTOR);
-			result_data = FlatVector::GetData<string_t>(result);
+			result_data = FlatVector::GetDataMutable<string_t>(result);
 		}
 	} else {
 		D_ASSERT(result.GetVectorType() == VectorType::FLAT_VECTOR);
-		result_data = FlatVector::GetData<string_t>(result);
+		result_data = FlatVector::GetDataMutable<string_t>(result);
 	}
 
 	auto offsets = StartScan(scan_state, base_data, start, scan_count);
@@ -687,13 +689,13 @@ void FSSTStorage::StringScanPartial(ColumnSegment &segment, ColumnScanState &sta
 			    segment, dict.end, result, baseptr,
 			    UnsafeNumericCast<int32_t>(delta_decode_buffer[i + offsets.unused_delta_decoded_values]),
 			    string_length);
-			FSSTVector::SetCount(result, scan_count);
 		}
+		FSSTVector::SetCount(result, scan_count);
 	} else {
 		// Just decompress
-		auto &str_buffer = StringVector::GetStringBuffer(result);
+		auto &str_allocator = StringVector::GetStringAllocator(result);
 		for (idx_t i = 0; i < scan_count; i++) {
-			result_data[i + result_offset] = scan_state.DecompressString(dict, baseptr, offsets, i, str_buffer);
+			result_data[i + result_offset] = scan_state.DecompressString(dict, baseptr, offsets, i, str_allocator);
 		}
 	}
 	EndScan(scan_state, offsets, start, scan_count);
@@ -709,21 +711,21 @@ void FSSTStorage::StringScan(ColumnSegment &segment, ColumnScanState &state, idx
 void FSSTStorage::Select(ColumnSegment &segment, ColumnScanState &state, idx_t vector_count, Vector &result,
                          const SelectionVector &sel, idx_t sel_count) {
 	auto &scan_state = state.scan_state->Cast<FSSTScanState>();
-	auto start = segment.GetRelativeIndex(state.row_index);
+	auto start = state.GetPositionInSegment();
 
-	auto baseptr = scan_state.handle.Ptr() + segment.GetBlockOffset();
+	auto baseptr = scan_state.handle.GetDataMutable() + segment.GetBlockOffset();
 	auto dict = GetDictionary(segment, scan_state.handle);
 	auto base_data = data_ptr_cast(baseptr + sizeof(fsst_compression_header_t));
 
 	D_ASSERT(result.GetVectorType() == VectorType::FLAT_VECTOR);
 
-	auto &str_buffer = StringVector::GetStringBuffer(result);
+	auto &str_allocator = StringVector::GetStringAllocator(result);
 	auto offsets = StartScan(scan_state, base_data, start, vector_count);
-	auto result_data = FlatVector::GetData<string_t>(result);
+	auto result_data = FlatVector::GetDataMutable<string_t>(result);
 
 	for (idx_t i = 0; i < sel_count; i++) {
 		idx_t index = sel.get_index(i);
-		result_data[i] = scan_state.DecompressString(dict, baseptr, offsets, index, str_buffer);
+		result_data[i] = scan_state.DecompressString(dict, baseptr, offsets, index, str_allocator);
 	}
 	EndScan(scan_state, offsets, start, vector_count);
 }
@@ -733,19 +735,18 @@ void FSSTStorage::Select(ColumnSegment &segment, ColumnScanState &state, idx_t v
 //===--------------------------------------------------------------------===//
 void FSSTStorage::StringFetchRow(ColumnSegment &segment, ColumnFetchState &state, row_t row_id, Vector &result,
                                  idx_t result_idx) {
-
 	auto &buffer_manager = BufferManager::GetBufferManager(segment.db);
 	auto handle = buffer_manager.Pin(segment.block);
-	auto base_ptr = handle.Ptr() + segment.GetBlockOffset();
+	auto base_ptr = handle.GetDataMutable() + segment.GetBlockOffset();
 	auto base_data = data_ptr_cast(base_ptr + sizeof(fsst_compression_header_t));
 	auto dict = GetDictionary(segment, handle);
 
 	duckdb_fsst_decoder_t decoder;
 	bitpacking_width_t width;
-	auto block_size = segment.GetBlockManager().GetBlockSize();
+	auto block_size = segment.GetBlockSize();
 	auto have_symbol_table = ParseFSSTSegmentHeader(base_ptr, &decoder, &width, block_size);
 
-	auto result_data = FlatVector::GetData<string_t>(result);
+	auto result_data = FlatVector::GetDataMutable<string_t>(result);
 	if (!have_symbol_table) {
 		// There is no FSST symtable. This is only the case for empty strings or NULLs. We emit an empty string.
 		result_data[result_idx] = string_t(nullptr, 0);
@@ -769,9 +770,9 @@ void FSSTStorage::StringFetchRow(ColumnSegment &segment, ColumnFetchState &state
 	    segment, dict.end, result, base_ptr,
 	    UnsafeNumericCast<int32_t>(delta_decode_buffer[offsets.unused_delta_decoded_values]), string_length);
 
-	auto &str_buffer = StringVector::GetStringBuffer(result);
-	result_data[result_idx] = FSSTPrimitives::DecompressValue((void *)&decoder, str_buffer, compressed_string.GetData(),
-	                                                          compressed_string.GetSize());
+	auto &str_allocator = StringVector::GetStringAllocator(result);
+	result_data[result_idx] = FSSTPrimitives::DecompressValue((void *)&decoder, str_allocator,
+	                                                          compressed_string.GetData(), compressed_string.GetSize());
 }
 
 //===--------------------------------------------------------------------===//
@@ -796,13 +797,13 @@ bool FSSTFun::TypeIsSupported(const PhysicalType physical_type) {
 // Helper Functions
 //===--------------------------------------------------------------------===//
 void FSSTStorage::SetDictionary(ColumnSegment &segment, BufferHandle &handle, StringDictionaryContainer container) {
-	auto header_ptr = reinterpret_cast<fsst_compression_header_t *>(handle.Ptr() + segment.GetBlockOffset());
+	auto header_ptr = reinterpret_cast<fsst_compression_header_t *>(handle.GetDataMutable() + segment.GetBlockOffset());
 	Store<uint32_t>(container.size, data_ptr_cast(&header_ptr->dict_size));
 	Store<uint32_t>(container.end, data_ptr_cast(&header_ptr->dict_end));
 }
 
 StringDictionaryContainer FSSTStorage::GetDictionary(ColumnSegment &segment, BufferHandle &handle) {
-	auto header_ptr = reinterpret_cast<fsst_compression_header_t *>(handle.Ptr() + segment.GetBlockOffset());
+	auto header_ptr = reinterpret_cast<fsst_compression_header_t *>(handle.GetDataMutable() + segment.GetBlockOffset());
 	StringDictionaryContainer container;
 	container.size = Load<uint32_t>(data_ptr_cast(&header_ptr->dict_size));
 	container.end = Load<uint32_t>(data_ptr_cast(&header_ptr->dict_end));

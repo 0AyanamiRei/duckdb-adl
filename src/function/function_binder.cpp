@@ -3,16 +3,17 @@
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/catalog/catalog_entry/scalar_function_catalog_entry.hpp"
 #include "duckdb/common/limits.hpp"
+#include "duckdb/common/type_visitor.hpp"
 #include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/function/aggregate_function.hpp"
-#include "duckdb/function/cast_rules.hpp"
-#include "duckdb/function/scalar/generic_functions.hpp"
-#include "duckdb/parser/parsed_data/create_secret_info.hpp"
+#include "duckdb/function/cast/cast_function_set.hpp"
 #include "duckdb/planner/expression/bound_aggregate_expression.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
+#include "duckdb/planner/expression/bound_window_expression.hpp"
 #include "duckdb/planner/expression_binder.hpp"
+#include "duckdb/planner/binder.hpp"
 
 namespace duckdb {
 
@@ -22,18 +23,20 @@ FunctionBinder::FunctionBinder(Binder &binder_p) : binder(&binder_p), context(bi
 }
 
 optional_idx FunctionBinder::BindVarArgsFunctionCost(const SimpleFunction &func, const vector<LogicalType> &arguments) {
-	if (arguments.size() < func.arguments.size()) {
+	auto &sig = func.GetSignature();
+
+	if (arguments.size() < sig.GetParameterCount()) {
 		// not enough arguments to fulfill the non-vararg part of the function
 		return optional_idx();
 	}
 	idx_t cost = 0;
 	for (idx_t i = 0; i < arguments.size(); i++) {
-		LogicalType arg_type = i < func.arguments.size() ? func.arguments[i] : func.varargs;
+		LogicalType arg_type = i < sig.GetParameterCount() ? sig.GetParameter(i).GetType() : sig.GetVarArgs();
 		if (arguments[i] == arg_type) {
 			// arguments match: do nothing
 			continue;
 		}
-		int64_t cast_cost = CastFunctionSet::Get(context).ImplicitCastCost(arguments[i], arg_type);
+		int64_t cast_cost = CastFunctionSet::ImplicitCastCost(context, arguments[i], arg_type);
 		if (cast_cost >= 0) {
 			// we can implicitly cast, add the cost to the total cost
 			cost += idx_t(cast_cost);
@@ -46,11 +49,13 @@ optional_idx FunctionBinder::BindVarArgsFunctionCost(const SimpleFunction &func,
 }
 
 optional_idx FunctionBinder::BindFunctionCost(const SimpleFunction &func, const vector<LogicalType> &arguments) {
-	if (func.HasVarArgs()) {
+	auto &sig = func.GetSignature();
+
+	if (sig.HasVarArgs()) {
 		// special case varargs function
 		return BindVarArgsFunctionCost(func, arguments);
 	}
-	if (func.arguments.size() != arguments.size()) {
+	if (sig.GetParameterCount() != arguments.size()) {
 		// invalid argument count: check the next function
 		return optional_idx();
 	}
@@ -61,7 +66,65 @@ optional_idx FunctionBinder::BindFunctionCost(const SimpleFunction &func, const 
 			has_parameter = true;
 			continue;
 		}
-		int64_t cast_cost = CastFunctionSet::Get(context).ImplicitCastCost(arguments[i], func.arguments[i]);
+		int64_t cast_cost = CastFunctionSet::ImplicitCastCost(context, arguments[i], sig.GetParameter(i).GetType());
+		if (cast_cost >= 0) {
+			// we can implicitly cast, add the cost to the total cost
+			cost += idx_t(cast_cost);
+		} else {
+			// we can't implicitly cast: throw an error
+			return optional_idx();
+		}
+	}
+	if (has_parameter) {
+		// all arguments are implicitly castable and there is a parameter - return 0 as cost
+		return 0;
+	}
+	return cost;
+}
+
+optional_idx FunctionBinder::BindVarArgsFunctionCost(const SimpleNamedParameterFunction &func,
+                                                     const vector<LogicalType> &arguments) {
+	if (arguments.size() < func.GetArguments().size()) {
+		// not enough arguments to fulfill the non-vararg part of the function
+		return optional_idx();
+	}
+	idx_t cost = 0;
+	for (idx_t i = 0; i < arguments.size(); i++) {
+		LogicalType arg_type = i < func.GetArguments().size() ? func.GetArguments()[i] : func.GetVarArgs();
+		if (arguments[i] == arg_type) {
+			// arguments match: do nothing
+			continue;
+		}
+		int64_t cast_cost = CastFunctionSet::ImplicitCastCost(context, arguments[i], arg_type);
+		if (cast_cost >= 0) {
+			// we can implicitly cast, add the cost to the total cost
+			cost += idx_t(cast_cost);
+		} else {
+			// we can't implicitly cast: throw an error
+			return optional_idx();
+		}
+	}
+	return cost;
+}
+
+optional_idx FunctionBinder::BindFunctionCost(const SimpleNamedParameterFunction &func,
+                                              const vector<LogicalType> &arguments) {
+	if (func.HasVarArgs()) {
+		// special case varargs function
+		return BindVarArgsFunctionCost(func, arguments);
+	}
+	if (func.GetArguments().size() != arguments.size()) {
+		// invalid argument count: check the next function
+		return optional_idx();
+	}
+	idx_t cost = 0;
+	bool has_parameter = false;
+	for (idx_t i = 0; i < arguments.size(); i++) {
+		if (arguments[i].id() == LogicalTypeId::UNKNOWN) {
+			has_parameter = true;
+			continue;
+		}
+		int64_t cast_cost = CastFunctionSet::ImplicitCastCost(context, arguments[i], func.GetArguments()[i]);
 		if (cast_cost >= 0) {
 			// we can implicitly cast, add the cost to the total cost
 			cost += idx_t(cast_cost);
@@ -135,7 +198,7 @@ optional_idx FunctionBinder::MultipleCandidateException(const string &catalog_na
 	string call_str = Function::CallToString(catalog_name, schema_name, name, arguments);
 	string candidate_str;
 	for (auto &conf : candidate_functions) {
-		T f = functions.GetFunctionByOffset(conf);
+		const auto &f = functions.GetFunctionByOffset(conf);
 		candidate_str += "\t" + f.ToString() + "\n";
 	}
 	error = ErrorData(
@@ -185,6 +248,11 @@ optional_idx FunctionBinder::BindFunction(const string &name, TableFunctionSet &
 	return BindFunctionFromArguments(name, functions, arguments, error);
 }
 
+optional_idx FunctionBinder::BindFunction(const string &name, WindowFunctionSet &functions,
+                                          const vector<LogicalType> &arguments, ErrorData &error) {
+	return BindFunctionFromArguments(name, functions, arguments, error);
+}
+
 optional_idx FunctionBinder::BindFunction(const string &name, PragmaFunctionSet &functions, vector<Value> &parameters,
                                           ErrorData &error) {
 	vector<LogicalType> types;
@@ -195,11 +263,11 @@ optional_idx FunctionBinder::BindFunction(const string &name, PragmaFunctionSet 
 	if (!entry.IsValid()) {
 		error.Throw();
 	}
-	auto candidate_function = functions.GetFunctionByOffset(entry.GetIndex());
+	const auto &candidate_function = functions.GetFunctionByOffset(entry.GetIndex());
 	// cast the input parameters
 	for (idx_t i = 0; i < parameters.size(); i++) {
-		auto target_type =
-		    i < candidate_function.arguments.size() ? candidate_function.arguments[i] : candidate_function.varargs;
+		auto target_type = i < candidate_function.GetArguments().size() ? candidate_function.GetArguments()[i]
+		                                                                : candidate_function.GetVarArgs();
 		parameters[i] = parameters[i].CastAs(context, target_type);
 	}
 	return entry;
@@ -234,7 +302,7 @@ optional_idx FunctionBinder::BindFunction(const string &name, TableFunctionSet &
 
 enum class LogicalTypeComparisonResult : uint8_t { IDENTICAL_TYPE, TARGET_IS_ANY, DIFFERENT_TYPES };
 
-LogicalTypeComparisonResult RequiresCast(const LogicalType &source_type, const LogicalType &target_type) {
+static LogicalTypeComparisonResult RequiresCast(const LogicalType &source_type, const LogicalType &target_type) {
 	if (target_type.id() == LogicalTypeId::ANY) {
 		return LogicalTypeComparisonResult::TARGET_IS_ANY;
 	}
@@ -250,7 +318,7 @@ LogicalTypeComparisonResult RequiresCast(const LogicalType &source_type, const L
 	return LogicalTypeComparisonResult::DIFFERENT_TYPES;
 }
 
-bool TypeRequiresPrepare(const LogicalType &type) {
+static bool TypeRequiresPrepare(const LogicalType &type) {
 	if (type.id() == LogicalTypeId::ANY) {
 		return true;
 	}
@@ -260,7 +328,7 @@ bool TypeRequiresPrepare(const LogicalType &type) {
 	return false;
 }
 
-LogicalType PrepareTypeForCastRecursive(const LogicalType &type) {
+static LogicalType PrepareTypeForCastRecursive(const LogicalType &type) {
 	if (type.id() == LogicalTypeId::ANY) {
 		return AnyType::GetTargetType(type);
 	}
@@ -270,34 +338,39 @@ LogicalType PrepareTypeForCastRecursive(const LogicalType &type) {
 	return type;
 }
 
-void PrepareTypeForCast(LogicalType &type) {
+static void PrepareTypeForCast(LogicalType &type) {
 	if (!TypeRequiresPrepare(type)) {
 		return;
 	}
 	type = PrepareTypeForCastRecursive(type);
 }
 
-void FunctionBinder::CastToFunctionArguments(SimpleFunction &function, vector<unique_ptr<Expression>> &children) {
-	for (auto &arg : function.arguments) {
+void FunctionBinder::CastToFunctionArguments(BoundSimpleFunction &function, vector<unique_ptr<Expression>> &children) {
+	for (auto &arg : function.GetArguments()) {
 		PrepareTypeForCast(arg);
 	}
-	PrepareTypeForCast(function.varargs);
+
+	// Varargs should be expanded by this point
+	// If not, the function has somehow added more argument expressions during binding, which is not allowed.
+	// There is one exception, count(*) which can be invoked internally with fewer arguments than the function
+	// definition. That should be fixed separately though.
+	D_ASSERT(children.size() <= function.GetArguments().size());
 
 	for (idx_t i = 0; i < children.size(); i++) {
-		auto target_type = i < function.arguments.size() ? function.arguments[i] : function.varargs;
+		auto &target_type = function.GetArguments()[i];
 		if (target_type.id() == LogicalTypeId::STRING_LITERAL || target_type.id() == LogicalTypeId::INTEGER_LITERAL) {
 			throw InternalException(
 			    "Function %s returned a STRING_LITERAL or INTEGER_LITERAL type - return an explicit type instead",
-			    function.name);
+			    function.GetName());
 		}
 		target_type.Verify();
 		// don't cast lambda children, they get removed before execution
-		if (children[i]->return_type.id() == LogicalTypeId::LAMBDA) {
+		if (children[i]->GetReturnType().id() == LogicalTypeId::LAMBDA) {
 			continue;
 		}
 		// check if the type of child matches the type of function argument
 		// if not we need to add a cast
-		auto cast_result = RequiresCast(children[i]->return_type, target_type);
+		auto cast_result = RequiresCast(children[i]->GetReturnType(), target_type);
 		// except for one special case: if the function accepts ANY argument
 		// in that case we don't add a cast
 		if (cast_result == LogicalTypeComparisonResult::DIFFERENT_TYPES) {
@@ -325,7 +398,7 @@ unique_ptr<Expression> FunctionBinder::BindScalarFunction(ScalarFunctionCatalogE
 	}
 
 	// found a matching function!
-	auto bound_function = func.functions.GetFunctionByOffset(best_function.GetIndex());
+	const auto &bound_function = func.functions.GetFunctionByOffset(best_function.GetIndex());
 
 	// If any of the parameters are NULL, the function will just be replaced with a NULL constant.
 	// We try to give the NULL constant the correct type, but we have to do this without binding the function,
@@ -333,10 +406,10 @@ unique_ptr<Expression> FunctionBinder::BindScalarFunction(ScalarFunctionCatalogE
 	// Some functions may have an invalid default return type, as they must be bound to infer the return type.
 	// In those cases, we default to SQLNULL.
 	const auto return_type_if_null =
-	    bound_function.return_type.IsComplete() ? bound_function.return_type : LogicalType::SQLNULL;
-	if (bound_function.null_handling == FunctionNullHandling::DEFAULT_NULL_HANDLING) {
+	    bound_function.GetReturnType().IsComplete() ? bound_function.GetReturnType() : LogicalType::SQLNULL;
+	if (bound_function.GetNullHandling() == FunctionNullHandling::DEFAULT_NULL_HANDLING) {
 		for (auto &child : children) {
-			if (child->return_type == LogicalTypeId::SQLNULL) {
+			if (child->GetReturnType() == LogicalTypeId::SQLNULL) {
 				return make_uniq<BoundConstantExpression>(Value(return_type_if_null));
 			}
 			if (!child->IsFoldable()) {
@@ -354,18 +427,18 @@ unique_ptr<Expression> FunctionBinder::BindScalarFunction(ScalarFunctionCatalogE
 	return BindScalarFunction(bound_function, std::move(children), is_operator, binder);
 }
 
-bool RequiresCollationPropagation(const LogicalType &type) {
+static bool RequiresCollationPropagation(const LogicalType &type) {
 	return type.id() == LogicalTypeId::VARCHAR && !type.HasAlias();
 }
 
-string ExtractCollation(const vector<unique_ptr<Expression>> &children) {
+static string ExtractCollation(const vector<unique_ptr<Expression>> &children) {
 	string collation;
 	for (auto &arg : children) {
-		if (!RequiresCollationPropagation(arg->return_type)) {
+		if (!RequiresCollationPropagation(arg->GetReturnType())) {
 			// not a varchar column
 			continue;
 		}
-		auto child_collation = StringType::GetCollation(arg->return_type);
+		auto child_collation = StringType::GetCollation(arg->GetReturnType());
 		if (collation.empty()) {
 			collation = child_collation;
 		} else if (!child_collation.empty() && collation != child_collation) {
@@ -375,8 +448,9 @@ string ExtractCollation(const vector<unique_ptr<Expression>> &children) {
 	return collation;
 }
 
-void PropagateCollations(ClientContext &, ScalarFunction &bound_function, vector<unique_ptr<Expression>> &children) {
-	if (!RequiresCollationPropagation(bound_function.return_type)) {
+static void PropagateCollations(ClientContext &, BoundSimpleFunction &bound_function,
+                                vector<unique_ptr<Expression>> &children) {
+	if (!RequiresCollationPropagation(bound_function.GetReturnType())) {
 		// we only need to propagate if the function returns a varchar
 		return;
 	}
@@ -387,11 +461,11 @@ void PropagateCollations(ClientContext &, ScalarFunction &bound_function, vector
 	}
 	// propagate the collation to the return type
 	auto collation_type = LogicalType::VARCHAR_COLLATION(std::move(collation));
-	bound_function.return_type = std::move(collation_type);
+	bound_function.SetReturnType(std::move(collation_type));
 }
 
-void PushCollations(ClientContext &context, ScalarFunction &bound_function, vector<unique_ptr<Expression>> &children,
-                    CollationType type) {
+static void PushCollations(ClientContext &context, BoundSimpleFunction &bound_function,
+                           vector<unique_ptr<Expression>> &children, CollationType type) {
 	auto collation = ExtractCollation(children);
 	if (collation.empty()) {
 		// no collation to push
@@ -399,23 +473,23 @@ void PushCollations(ClientContext &context, ScalarFunction &bound_function, vect
 	}
 	// push collation into the return type if required
 	auto collation_type = LogicalType::VARCHAR_COLLATION(std::move(collation));
-	if (RequiresCollationPropagation(bound_function.return_type)) {
-		bound_function.return_type = collation_type;
+	if (RequiresCollationPropagation(bound_function.GetReturnType())) {
+		bound_function.SetReturnType(collation_type);
 	}
 	// push collations to the children
 	for (auto &arg : children) {
-		if (RequiresCollationPropagation(arg->return_type)) {
+		if (RequiresCollationPropagation(arg->GetReturnType())) {
 			// if this is a varchar type - propagate the collation
-			arg->return_type = collation_type;
+			arg->SetReturnType(collation_type);
 		}
 		// now push the actual collation handling
-		ExpressionBinder::PushCollation(context, arg, arg->return_type, type);
+		ExpressionBinder::PushCollation(context, arg, arg->GetReturnType(), type);
 	}
 }
 
-void HandleCollations(ClientContext &context, ScalarFunction &bound_function,
-                      vector<unique_ptr<Expression>> &children) {
-	switch (bound_function.collation_handling) {
+static void HandleCollations(ClientContext &context, BoundSimpleFunction &bound_function,
+                             const FunctionProperties &props, vector<unique_ptr<Expression>> &children) {
+	switch (props.GetCollationHandling()) {
 	case FunctionCollationHandling::IGNORE_COLLATIONS:
 		// explicitly ignoring collation handling
 		break;
@@ -431,64 +505,357 @@ void HandleCollations(ClientContext &context, ScalarFunction &bound_function,
 	}
 }
 
-unique_ptr<Expression> FunctionBinder::BindScalarFunction(ScalarFunction bound_function,
-                                                          vector<unique_ptr<Expression>> children, bool is_operator,
-                                                          optional_ptr<Binder> binder) {
+static void InferTemplateType(ClientContext &context, const LogicalType &source, const LogicalType &target,
+                              case_insensitive_map_t<vector<LogicalType>> &bindings, const Expression &current_expr,
+                              const BoundSimpleFunction &function) {
+	if (target.id() == LogicalTypeId::UNKNOWN || target.id() == LogicalTypeId::SQLNULL) {
+		// If the actual type is unknown, we cannot infer anything more.
+		// Therefore, we map all remaining templates in the source to UNKNOWN or SQLNULL, if not already inferred to
+		// something else
+
+		// This might seem a bit strange, why not just not set the binding and error out later when we try to substitute
+		// all templates? Well, this is how bindings for most nested functions already work, they simply propagate the
+		// UNKNOWN/SQLNULL. The binder will later check for UNKNOWN/SQLNULL in return types and if it finds one, insert
+		// a dummy cast to INT32 so that the function can be executed without errors (and just return NULLs).
+
+		TypeVisitor::Contains(source, [&](const LogicalType &child) {
+			if (child.id() == LogicalTypeId::TEMPLATE) {
+				const auto index = TemplateType::GetName(child);
+				if (bindings.find(index) == bindings.end()) {
+					// not found, add the binding
+					bindings[index] = {target.id()};
+				}
+			}
+			return false; // continue visiting
+		});
+		return;
+	}
+
+	// If the source is a template type, we bind it, or try to unify its existing binding with the target type.
+	if (source.id() == LogicalTypeId::TEMPLATE) {
+		const auto &index = TemplateType::GetName(source);
+		auto it = bindings.find(index);
+		if (it == bindings.end()) {
+			// not found, add the binding
+			bindings[index] = {target};
+			return;
+		}
+		if (it->second.back() == target) {
+			// already bound to the same type
+			return;
+		}
+
+		// Try to unify (promote) the type candidates
+		LogicalType result;
+		if (LogicalType::TryGetMaxLogicalType(context, it->second.back(), target, result)) {
+			// Type unification was successful
+			if (it->second.back() != result) {
+				// update the binding
+				it->second.push_back(target);
+				it->second.push_back(std::move(result)); // Push the new promoted type
+			}
+			return;
+		}
+
+		// If we reach here, it means the types are incompatible
+		string msg =
+		    StringUtil::Format("Cannot deduce template type '%s' in function: '%s'\nType '%s' was inferred to be:\n",
+		                       TemplateType::GetName(source), function.ToString(), TemplateType::GetName(source));
+		const auto &steps = it->second;
+
+		for (idx_t i = 0; i < steps.size(); i += 2) {
+			if (i == 0) {
+				// Normalize the first step to ensure it is a valid type
+				msg += StringUtil::Format(" - '%s', from first occurrence\n", steps[i].ToString());
+			} else {
+				msg += StringUtil::Format(" - '%s', by promoting '%s' + '%s'\n", steps[i].ToString(),
+				                          steps[i - 2].ToString(), steps[i - 1]);
+			}
+		}
+		msg += StringUtil::Format(" - '%s', which is incompatible with previously inferred type!", target.ToString());
+		throw BinderException(current_expr.GetQueryLocation(), msg);
+	}
+
+	// Otherwise, recurse downwards into nested types, and try to infer nested type members
+	// This only works if the source and target types are completely defined (excluding templates),
+	// i.e. they have aux info.
+	if (!(source.IsNested() && target.IsNested() && source.AuxInfo() && target.AuxInfo())) {
+		return;
+	}
+
+	switch (source.id()) {
+	case LogicalTypeId::LIST:
+	case LogicalTypeId::ARRAY: {
+		if ((source.id() == LogicalTypeId::ARRAY || source.id() == LogicalTypeId::LIST) &&
+		    (target.id() == LogicalTypeId::LIST || target.id() == LogicalTypeId::ARRAY)) {
+			const auto &source_child =
+			    source.id() == LogicalTypeId::LIST ? ListType::GetChildType(source) : ArrayType::GetChildType(source);
+			const auto &target_child =
+			    target.id() == LogicalTypeId::LIST ? ListType::GetChildType(target) : ArrayType::GetChildType(target);
+			InferTemplateType(context, source_child, target_child, bindings, current_expr, function);
+		}
+	} break;
+	case LogicalTypeId::MAP: {
+		// Map is only implicitly castable to map, so we only need to handle this case here/
+		if (target.id() == LogicalTypeId::MAP) {
+			const auto &source_key = MapType::KeyType(source);
+			const auto &source_val = MapType::ValueType(source);
+			const auto &target_key = MapType::KeyType(target);
+			const auto &target_val = MapType::ValueType(target);
+
+			InferTemplateType(context, source_key, target_key, bindings, current_expr, function);
+			InferTemplateType(context, source_val, target_val, bindings, current_expr, function);
+		}
+	} break;
+	case LogicalTypeId::UNION: {
+		// TODO: Support union types with template member types.
+		throw NotImplementedException("Union types cannot infer templated member types yet!");
+	} break;
+	case LogicalTypeId::STRUCT: {
+		// Structs are only implicitly castable to structs, so we only need to handle this case here.
+		if (target.id() == LogicalTypeId::STRUCT && StructType::IsUnnamed(source)) {
+			const auto &source_children = StructType::GetChildTypes(source);
+			const auto &target_children = StructType::GetChildTypes(target);
+
+			const auto common_children = MinValue(source_children.size(), target_children.size());
+			for (idx_t i = 0; i < common_children; i++) {
+				const auto &source_child_type = source_children[i].second;
+				const auto &target_child_type = target_children[i].second;
+				InferTemplateType(context, source_child_type, target_child_type, bindings, current_expr, function);
+			}
+		} else {
+			// TODO: Support named structs with template child types.
+			throw NotImplementedException("Named structs cannot infer templated child types yet!");
+		}
+	} break;
+	default:
+		break; // no template type to infer
+	}
+}
+
+static void SubstituteTemplateType(LogicalType &type, case_insensitive_map_t<vector<LogicalType>> &bindings,
+                                   const string &function_name) {
+	// Replace all template types in with their bound concrete types.
+	type = TypeVisitor::VisitReplace(type, [&](const LogicalType &t) -> LogicalType {
+		if (t.id() == LogicalTypeId::TEMPLATE) {
+			const auto index = TemplateType::GetName(t);
+			auto it = bindings.find(index);
+			if (it != bindings.end()) {
+				// found a binding, return the concrete type
+				return LogicalType::NormalizeType(it->second.back());
+			}
+
+			// If we reach here, the template type was not bound to any concrete type.
+			// We dont throw an error here, but give users a chance to handle unresolved template type later in the
+			// "bind_scalar_function_t" callback. We then throw an error if the template type is still not bound
+			// in the "CheckTemplateTypesResolved" method afterwards.
+		}
+		return t;
+	});
+}
+
+void FunctionBinder::ResolveTemplateTypes(BoundSimpleFunction &bound_function,
+                                          const vector<unique_ptr<Expression>> &children) {
+	case_insensitive_map_t<vector<LogicalType>> bindings;
+	vector<reference<LogicalType>> to_substitute;
+
+	// First, we need to infer the template types from the children.
+	for (idx_t i = 0; i < bound_function.GetArguments().size(); i++) {
+		auto &param = bound_function.GetArguments()[i];
+
+		// If the parameter is not templated, we can skip it.
+		if (param.IsTemplated()) {
+			auto actual = ExpressionBinder::GetExpressionReturnType(*children[i]);
+			InferTemplateType(context, param, actual, bindings, *children[i], bound_function);
+
+			to_substitute.emplace_back(param);
+		}
+	}
+
+	// If the return type is templated, we need to substitute it as well
+	if (bound_function.GetReturnType().IsTemplated()) {
+		to_substitute.emplace_back(bound_function.GetReturnType());
+	}
+
+	// Finally, substitute all template types in the bound function with their concrete types.
+	for (auto &templated_type : to_substitute) {
+		SubstituteTemplateType(templated_type, bindings, bound_function.GetName());
+	}
+}
+
+static void VerifyTemplateType(const LogicalType &type, const string &function_name) {
+	TypeVisitor::Contains(type, [&](const LogicalType &type) {
+		if (type.id() == LogicalTypeId::TEMPLATE) {
+			const auto msg =
+			    "Function '%s' has a template parameter type '%s' that could not be resolved to a concrete type";
+			throw BinderException(msg, function_name, TemplateType::GetName(type));
+		}
+		return false; // continue visiting
+	});
+}
+
+// Verify that all template types are bound to concrete types.
+void FunctionBinder::CheckTemplateTypesResolved(const BoundSimpleFunction &bound_function) {
+	for (const auto &arg : bound_function.GetArguments()) {
+		VerifyTemplateType(arg, bound_function.GetName());
+	}
+	VerifyTemplateType(bound_function.GetReturnType(), bound_function.GetName());
+}
+
+pair<BoundScalarFunction, unique_ptr<FunctionData>>
+FunctionBinder::ResolveFunction(const ScalarFunction &function, vector<unique_ptr<Expression>> &children) {
+	// Make a BoundScalarFunction out of the ScalarFunction, so we can store bind info and other properties in it.
+	BoundScalarFunction bound_function(function);
+
+	// Expand varargs if necessary
+	if (function.HasVarArgs()) {
+		const auto &varargs_type = function.GetVarArgs();
+		for (idx_t i = function.GetSignature().GetParameterCount(); i < children.size(); i++) {
+			bound_function.GetArguments().push_back(varargs_type);
+		}
+	}
+
+	// Attempt to resolve template types, before we call the "Bind" callback.
+	ResolveTemplateTypes(bound_function, children);
+
+	// ResolveTemplateTypes(bound_function.arguments, bound_function.return_type, children, bound_function);
+
 	unique_ptr<FunctionData> bind_info;
 
-	if (bound_function.bind) {
-		bind_info = bound_function.bind(context, bound_function, children);
-	} else if (bound_function.bind_extended) {
-		if (!binder) {
-			throw InternalException("Function '%s' has a 'bind_extended' but the FunctionBinder was created without "
-			                        "a reference to a Binder",
-			                        bound_function.name);
-		}
-		ScalarFunctionBindInput bind_input(*binder);
-		bind_info = bound_function.bind_extended(bind_input, bound_function, children);
+	if (bound_function.HasBindCallback()) {
+		BindScalarFunctionInput input(context, bound_function, children, binder);
+		bind_info = bound_function.GetBindCallback()(input);
 	}
 
-	if (bound_function.get_modified_databases && binder) {
+	// After the "bind" callback, we verify that all template types are bound to concrete types.
+	CheckTemplateTypesResolved(bound_function);
+
+	if (bound_function.HasModifiedDatabasesCallback() && binder) {
 		auto &properties = binder->GetStatementProperties();
 		FunctionModifiedDatabasesInput input(bind_info, properties);
-		bound_function.get_modified_databases(context, input);
+		bound_function.GetModifiedDatabasesCallback()(context, input);
 	}
-	HandleCollations(context, bound_function, children);
+
+	HandleCollations(context, bound_function, bound_function.GetProperties(), children);
 
 	// check if we need to add casts to the children
 	CastToFunctionArguments(bound_function, children);
 
-	auto return_type = bound_function.return_type;
+	return {std::move(bound_function), std::move(bind_info)};
+}
+
+unique_ptr<Expression> FunctionBinder::BindScalarFunction(const ScalarFunction &function,
+                                                          vector<unique_ptr<Expression>> children, bool is_operator,
+                                                          optional_ptr<Binder> binder) {
+	auto [bound_function, bind_info] = ResolveFunction(function, children);
+
 	unique_ptr<Expression> result;
-	auto result_func = make_uniq<BoundFunctionExpression>(std::move(return_type), std::move(bound_function),
-	                                                      std::move(children), std::move(bind_info), is_operator);
-	if (result_func->function.bind_expression) {
+
+	auto result_func = make_uniq<BoundFunctionExpression>(std::move(bound_function), std::move(children),
+	                                                      std::move(bind_info), is_operator);
+
+	if (result_func->function.HasBindExpressionCallback()) {
 		// if a bind_expression callback is registered - call it and emit the resulting expression
-		FunctionBindExpressionInput input(context, result_func->bind_info.get(), result_func->children);
-		result = result_func->function.bind_expression(input);
+		FunctionBindExpressionInput input(context, result_func->function, result_func->bind_info.get(),
+		                                  result_func->children);
+		result = result_func->function.GetBindExpressionCallback()(input);
 	}
+
 	if (!result) {
 		result = std::move(result_func);
 	}
+
 	return result;
 }
 
-unique_ptr<BoundAggregateExpression> FunctionBinder::BindAggregateFunction(AggregateFunction bound_function,
-                                                                           vector<unique_ptr<Expression>> children,
-                                                                           unique_ptr<Expression> filter,
-                                                                           AggregateType aggr_type) {
-	unique_ptr<FunctionData> bind_info;
-	if (bound_function.bind) {
-		bind_info = bound_function.bind(context, bound_function, children);
-		// we may have lost some arguments in the bind
-		children.resize(MinValue(bound_function.arguments.size(), children.size()));
+pair<BoundAggregateFunction, unique_ptr<FunctionData>>
+FunctionBinder::ResolveFunction(const AggregateFunction &function, vector<unique_ptr<Expression>> &children) {
+	// Make a BoundFunction out of the func
+	BoundAggregateFunction bound_function(function);
+
+	// Expand varargs if necessary
+	if (function.HasVarArgs()) {
+		const auto &varargs_type = function.GetVarArgs();
+		for (idx_t i = function.GetSignature().GetParameterCount(); i < children.size(); i++) {
+			bound_function.GetArguments().push_back(varargs_type);
+		}
 	}
+
+	ResolveTemplateTypes(bound_function, children);
+
+	unique_ptr<FunctionData> bind_info;
+
+	if (bound_function.GetCallbacks().HasBindCallback()) {
+		BindAggregateFunctionInput input(context, bound_function, children);
+		bind_info = bound_function.GetCallbacks().GetBindCallback()(input);
+
+		// we may have lost some arguments in the bind
+		children.resize(MinValue(bound_function.GetArguments().size(), children.size()));
+	}
+
+	CheckTemplateTypesResolved(bound_function);
 
 	// check if we need to add casts to the children
 	CastToFunctionArguments(bound_function, children);
 
+	return {std::move(bound_function), std::move(bind_info)};
+}
+
+unique_ptr<BoundAggregateExpression> FunctionBinder::BindAggregateFunction(const AggregateFunction &function,
+                                                                           vector<unique_ptr<Expression>> children,
+                                                                           unique_ptr<Expression> filter,
+                                                                           AggregateType aggr_type) {
+	auto [bound_function, bind_info] = ResolveFunction(function, children);
+
 	return make_uniq<BoundAggregateExpression>(std::move(bound_function), std::move(children), std::move(filter),
 	                                           std::move(bind_info), aggr_type);
+}
+
+pair<BoundWindowFunction, unique_ptr<FunctionData>>
+FunctionBinder::ResolveFunction(const WindowFunction &function, vector<unique_ptr<Expression>> &children,
+                                optional_ptr<vector<OrderByNode>> orders,
+                                optional_ptr<vector<OrderByNode>> arg_orders) {
+	BoundWindowFunction bound_function(function);
+
+	// Expand varargs if necessary
+	if (function.HasVarArgs()) {
+		const auto &varargs_type = function.GetVarArgs();
+		for (idx_t i = function.GetSignature().GetParameterCount(); i < children.size(); i++) {
+			bound_function.GetArguments().push_back(varargs_type);
+		}
+	}
+
+	ResolveTemplateTypes(bound_function, children);
+
+	unique_ptr<FunctionData> bind_info;
+
+	if (bound_function.HasBindCallback()) {
+		BindWindowFunctionInput input(context, bound_function, children, orders, arg_orders);
+		bind_info = bound_function.GetBindCallback()(input);
+		// we may have lost some arguments in the bind
+		children.resize(MinValue(bound_function.GetArguments().size(), children.size()));
+	}
+
+	CheckTemplateTypesResolved(bound_function);
+
+	// check if we need to add casts to the children
+	CastToFunctionArguments(bound_function, children);
+
+	return {std::move(bound_function), std::move(bind_info)};
+}
+
+unique_ptr<BoundWindowExpression> FunctionBinder::BindWindowFunction(const WindowFunction &function,
+                                                                     vector<unique_ptr<Expression>> children,
+                                                                     vector<OrderByNode> &orders,
+                                                                     vector<OrderByNode> &arg_orders) {
+	auto [bound_function, bind_info] = ResolveFunction(function, children, orders, arg_orders);
+	auto return_type = bound_function.GetReturnType();
+
+	auto window = make_uniq<BoundWindowFunction>(std::move(bound_function));
+	auto result = make_uniq<BoundWindowExpression>(return_type, nullptr, std::move(window), std::move(bind_info));
+	result->children = std::move(children);
+
+	return result;
 }
 
 } // namespace duckdb

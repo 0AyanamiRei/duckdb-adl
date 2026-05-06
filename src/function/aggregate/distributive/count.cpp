@@ -1,5 +1,4 @@
 #include "duckdb/common/exception.hpp"
-#include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/function/aggregate/distributive_functions.hpp"
 #include "duckdb/function/aggregate/distributive_function_utils.hpp"
 #include "duckdb/planner/expression/bound_aggregate_expression.hpp"
@@ -36,26 +35,35 @@ struct CountStarFunction : public BaseCountFunction {
 	}
 
 	template <typename RESULT_TYPE>
-	static void Window(AggregateInputData &aggr_input_data, const WindowPartitionInput &partition, const_data_ptr_t,
-	                   data_ptr_t l_state, const SubFrames &frames, Vector &result, idx_t rid) {
+	static void Window(AggregateInputData &aggr_input_data, const WindowPartitionInput &partition,
+	                   const_data_ptr_t g_state, data_ptr_t l_state, const SubFrames *subframes_per_row, idx_t count,
+	                   Vector &result, idx_t row_idx) {
 		D_ASSERT(partition.column_ids.empty());
 
-		auto data = FlatVector::GetData<RESULT_TYPE>(result);
-		RESULT_TYPE total = 0;
-		for (const auto &frame : frames) {
-			const auto begin = frame.start;
-			const auto end = frame.end;
+		auto data = FlatVector::GetDataMutable<RESULT_TYPE>(result);
 
-			// Slice to any filtered rows
-			if (partition.filter_mask.AllValid()) {
-				total += end - begin;
-				continue;
+		// Slice to any filtered rows
+		if (partition.filter_mask.CannotHaveNull()) {
+			for (idx_t rid = 0; rid < count; ++rid) {
+				RESULT_TYPE total = 0;
+				const auto &frames = subframes_per_row[rid];
+				for (const auto &frame : frames) {
+					total += frame.end - frame.start;
+				}
+				data[rid] = total;
 			}
-			for (auto i = begin; i < end; ++i) {
-				total += partition.filter_mask.RowIsValid(i);
+		} else {
+			for (idx_t rid = 0; rid < count; ++rid) {
+				RESULT_TYPE total = 0;
+				const auto &frames = subframes_per_row[rid];
+				for (const auto &frame : frames) {
+					for (auto i = frame.start; i < frame.end; ++i) {
+						total += partition.filter_mask.RowIsValid(i);
+					}
+				}
+				data[rid] = total;
 			}
 		}
-		data[rid] = total;
 	}
 };
 
@@ -74,8 +82,8 @@ struct CountFunction : public BaseCountFunction {
 		return true;
 	}
 
-	static inline void CountFlatLoop(STATE **__restrict states, ValidityMask &mask, idx_t count) {
-		if (!mask.AllValid()) {
+	static inline void CountFlatLoop(STATE **__restrict states, const ValidityMask &mask, idx_t count) {
+		if (mask.CanHaveNull()) {
 			idx_t base_idx = 0;
 			auto entry_count = ValidityMask::EntryCount(count);
 			for (idx_t entry_idx = 0; entry_idx < entry_count; entry_idx++) {
@@ -106,10 +114,11 @@ struct CountFunction : public BaseCountFunction {
 			}
 		}
 	}
+	using STATE_PTR = STATE *const *;
 
-	static inline void CountScatterLoop(STATE **__restrict states, const SelectionVector &isel,
+	static inline void CountScatterLoop(STATE_PTR __restrict states, const SelectionVector &isel,
 	                                    const SelectionVector &ssel, ValidityMask &mask, idx_t count) {
-		if (!mask.AllValid()) {
+		if (mask.CanHaveNull()) {
 			// potential NULL values
 			for (idx_t i = 0; i < count; i++) {
 				auto idx = isel.get_index(i);
@@ -131,17 +140,18 @@ struct CountFunction : public BaseCountFunction {
 	                         idx_t count) {
 		auto &input = inputs[0];
 		if (input.GetVectorType() == VectorType::FLAT_VECTOR && states.GetVectorType() == VectorType::FLAT_VECTOR) {
-			auto sdata = FlatVector::GetData<STATE *>(states);
-			CountFlatLoop(sdata, FlatVector::Validity(input), count);
+			auto sdata = FlatVector::GetDataMutable<STATE *>(states);
+			CountFlatLoop(sdata, FlatVector::ValidityMutable(input), count);
 		} else {
 			UnifiedVectorFormat idata, sdata;
 			input.ToUnifiedFormat(count, idata);
 			states.ToUnifiedFormat(count, sdata);
-			CountScatterLoop(reinterpret_cast<STATE **>(sdata.data), *idata.sel, *sdata.sel, idata.validity, count);
+			CountScatterLoop(UnifiedVectorFormat::GetData<STATE *>(sdata), *idata.sel, *sdata.sel, idata.validity,
+			                 count);
 		}
 	}
 
-	static inline void CountFlatUpdateLoop(STATE &result, ValidityMask &mask, idx_t count) {
+	static inline void CountFlatUpdateLoop(STATE &result, const ValidityMask &mask, idx_t count) {
 		idx_t base_idx = 0;
 		auto entry_count = ValidityMask::EntryCount(count);
 		for (idx_t entry_idx = 0; entry_idx < entry_count; entry_idx++) {
@@ -167,9 +177,9 @@ struct CountFunction : public BaseCountFunction {
 		}
 	}
 
-	static inline void CountUpdateLoop(STATE &result, ValidityMask &mask, idx_t count,
+	static inline void CountUpdateLoop(STATE &result, const ValidityMask &mask, idx_t count,
 	                                   const SelectionVector &sel_vector) {
-		if (mask.AllValid()) {
+		if (mask.CannotHaveNull()) {
 			// no NULL values
 			result += UnsafeNumericCast<STATE>(count);
 			return;
@@ -194,7 +204,7 @@ struct CountFunction : public BaseCountFunction {
 			break;
 		}
 		case VectorType::FLAT_VECTOR: {
-			CountFlatUpdateLoop(result, FlatVector::Validity(input), count);
+			CountFlatUpdateLoop(result, FlatVector::ValidityMutable(input), count);
 			break;
 		}
 		case VectorType::SEQUENCE_VECTOR: {
@@ -212,12 +222,18 @@ struct CountFunction : public BaseCountFunction {
 	}
 };
 
+LogicalType GetCountStateType(const BoundAggregateFunction &function) {
+	child_list_t<LogicalType> children;
+	children.emplace_back("count", LogicalType::BIGINT);
+	return LogicalType::STRUCT(std::move(children));
+}
+
 unique_ptr<BaseStatistics> CountPropagateStats(ClientContext &context, BoundAggregateExpression &expr,
                                                AggregateStatisticsInput &input) {
 	if (!expr.IsDistinct() && !input.child_stats[0].CanHaveNull()) {
 		// count on a column without null values: use count star
-		expr.function = CountStarFun::GetFunction();
-		expr.function.name = "count_star";
+		expr.function.ReplaceImplementation(CountStarFun::GetFunction());
+		expr.function.SetName("count_star");
 		expr.children.clear();
 	}
 	return nullptr;
@@ -232,22 +248,24 @@ AggregateFunction CountFunctionBase::GetFunction() {
 	                      AggregateFunction::StateFinalize<int64_t, int64_t, CountFunction>,
 	                      FunctionNullHandling::SPECIAL_HANDLING, CountFunction::CountUpdate);
 	fun.name = "count";
-	fun.order_dependent = AggregateOrderDependent::NOT_ORDER_DEPENDENT;
+	fun.SetOrderDependent(AggregateOrderDependent::NOT_ORDER_DEPENDENT);
+	fun.SetStructStateExport(GetCountStateType);
+	fun.SetStatisticsCallback(CountPropagateStats);
 	return fun;
 }
 
 AggregateFunction CountStarFun::GetFunction() {
 	auto fun = AggregateFunction::NullaryAggregate<int64_t, int64_t, CountStarFunction>(LogicalType::BIGINT);
 	fun.name = "count_star";
-	fun.null_handling = FunctionNullHandling::SPECIAL_HANDLING;
-	fun.order_dependent = AggregateOrderDependent::NOT_ORDER_DEPENDENT;
-	fun.window = CountStarFunction::Window<int64_t>;
+	fun.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
+	fun.SetOrderDependent(AggregateOrderDependent::NOT_ORDER_DEPENDENT);
+	fun.SetWindowBatchCallback(CountStarFunction::Window<int64_t>);
+	fun.SetStructStateExport(GetCountStateType);
 	return fun;
 }
 
 AggregateFunctionSet CountFun::GetFunctions() {
 	AggregateFunction count_function = CountFunctionBase::GetFunction();
-	count_function.statistics = CountPropagateStats;
 	AggregateFunctionSet count("count");
 	count.AddFunction(count_function);
 	// the count function can also be called without arguments

@@ -43,10 +43,10 @@ BoundStatement Binder::Bind(ExecuteStatement &stmt) {
 		if (is_literal) {
 			auto &constant = bound_expr->Cast<BoundConstantExpression>();
 			LogicalType return_type;
-			if (constant.return_type == LogicalTypeId::VARCHAR &&
-			    StringType::GetCollation(constant.return_type).empty()) {
+			if (constant.GetReturnType() == LogicalTypeId::VARCHAR &&
+			    StringType::GetCollation(constant.GetReturnType()).empty()) {
 				return_type = LogicalTypeId::STRING_LITERAL;
-			} else if (constant.return_type.IsIntegral()) {
+			} else if (constant.GetReturnType().IsIntegral()) {
 				return_type = LogicalType::INTEGER_LITERAL(constant.value);
 			} else {
 				return_type = constant.value.type();
@@ -79,7 +79,7 @@ BoundStatement Binder::Bind(ExecuteStatement &stmt) {
 		prepared = prepared_planner.PrepareSQLStatement(entry->second->unbound_statement->Copy());
 		rebound_plan = std::move(prepared_planner.plan);
 		D_ASSERT(prepared->properties.bound_all_parameters);
-		this->bound_tables = prepared_planner.binder->bound_tables;
+		global_binder_state->bound_tables = prepared_planner.binder->global_binder_state->bound_tables;
 	}
 	// copy the properties of the prepared statement into the planner
 	auto &properties = GetStatementProperties();

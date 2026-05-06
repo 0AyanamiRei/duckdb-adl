@@ -7,7 +7,6 @@ namespace duckdb {
 PhysicalFilter::PhysicalFilter(PhysicalPlan &physical_plan, vector<LogicalType> types,
                                vector<unique_ptr<Expression>> select_list, idx_t estimated_cardinality)
     : CachingPhysicalOperator(physical_plan, PhysicalOperatorType::FILTER, std::move(types), estimated_cardinality) {
-
 	D_ASSERT(!select_list.empty());
 	if (select_list.size() == 1) {
 		expression = std::move(select_list[0]);
@@ -48,7 +47,7 @@ OperatorResultType PhysicalFilter::ExecuteInternal(ExecutionContext &context, Da
 	if (result_count == input.size()) {
 		// nothing was filtered: skip adding any selection vectors
 		chunk.Reference(input);
-	} else {
+	} else if (result_count > 0) {
 		chunk.Slice(input, state.sel, result_count);
 	}
 	return OperatorResultType::NEED_MORE_INPUT;

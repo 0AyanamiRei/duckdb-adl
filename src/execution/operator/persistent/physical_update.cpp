@@ -1,5 +1,6 @@
 #include "duckdb/execution/operator/persistent/physical_update.hpp"
 
+#include "duckdb/catalog/catalog_entry/duck_table_entry.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/common/types/column/column_data_collection.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
@@ -8,6 +9,7 @@
 #include "duckdb/parallel/thread_context.hpp"
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
 #include "duckdb/storage/data_table.hpp"
+#include "duckdb/storage/table/data_table_info.hpp"
 #include "duckdb/storage/table/delete_state.hpp"
 #include "duckdb/storage/table/scan_state.hpp"
 #include "duckdb/storage/table/update_state.hpp"
@@ -15,7 +17,7 @@
 
 namespace duckdb {
 
-PhysicalUpdate::PhysicalUpdate(PhysicalPlan &physical_plan, vector<LogicalType> types, TableCatalogEntry &tableref,
+PhysicalUpdate::PhysicalUpdate(PhysicalPlan &physical_plan, vector<LogicalType> types, DuckTableEntry &tableref,
                                DataTable &table, vector<PhysicalIndex> columns,
                                vector<unique_ptr<Expression>> expressions,
                                vector<unique_ptr<Expression>> bound_defaults,
@@ -25,7 +27,6 @@ PhysicalUpdate::PhysicalUpdate(PhysicalPlan &physical_plan, vector<LogicalType> 
       tableref(tableref), table(table), columns(std::move(columns)), expressions(std::move(expressions)),
       bound_defaults(std::move(bound_defaults)), bound_constraints(std::move(bound_constraints)),
       return_chunk(return_chunk), index_update(false) {
-
 	auto &indexes = table.GetDataTableInfo().get()->GetIndexes();
 	auto index_columns = indexes.GetRequiredColumns();
 
@@ -67,13 +68,12 @@ public:
 	                 const vector<LogicalType> &table_types, const vector<unique_ptr<Expression>> &bound_defaults,
 	                 const vector<unique_ptr<BoundConstraint>> &bound_constraints)
 	    : default_executor(context, bound_defaults), bound_constraints(bound_constraints) {
-
 		// Initialize the update chunk.
 		auto &allocator = Allocator::Get(context);
 		vector<LogicalType> update_types;
 		update_types.reserve(expressions.size());
 		for (auto &expr : expressions) {
-			update_types.push_back(expr->return_type);
+			update_types.push_back(expr->GetReturnType());
 		}
 		update_chunk.Initialize(allocator, update_types);
 
@@ -140,7 +140,7 @@ SinkResultType PhysicalUpdate::Sink(ExecutionContext &context, DataChunk &chunk,
 			}
 		}
 		auto &update_state = l_state.GetUpdateState(table, tableref, context.client);
-		table.Update(update_state, context.client, row_ids, columns, update_chunk);
+		table.Update(update_state, context.client, tableref, row_ids, columns, update_chunk);
 
 		if (return_chunk) {
 			lock_guard<mutex> glock(g_state.lock);
@@ -162,14 +162,14 @@ SinkResultType PhysicalUpdate::Sink(ExecutionContext &context, DataChunk &chunk,
 	lock_guard<mutex> glock(g_state.lock);
 	for (idx_t i = 0; i < update_chunk.size(); i++) {
 		auto row_id = row_id_data[i];
-		if (g_state.updated_rows.find(row_id) == g_state.updated_rows.end()) {
-			g_state.updated_rows.insert(row_id);
+		const auto is_new = g_state.updated_rows.insert(row_id).second;
+		if (is_new) {
 			sel.set_index(update_count++, i);
 		}
 	}
 
 	// The update chunk now contains exactly those rows that we are deleting.
-	Vector del_row_ids(row_ids);
+	Vector del_row_ids(Vector::Ref(row_ids));
 	if (update_count != update_chunk.size()) {
 		update_chunk.Slice(sel, update_count);
 		del_row_ids.Slice(row_ids, sel, update_count);
@@ -191,7 +191,7 @@ SinkResultType PhysicalUpdate::Sink(ExecutionContext &context, DataChunk &chunk,
 	}
 
 	auto &delete_state = l_state.GetDeleteState(table, tableref, context.client);
-	table.Delete(delete_state, context.client, del_row_ids, update_count);
+	table.Delete(delete_state, context.client, tableref, del_row_ids, update_count);
 
 	// Arrange the columns in the standard table order.
 	mock_chunk.SetCardinality(update_count);
@@ -244,13 +244,13 @@ unique_ptr<GlobalSourceState> PhysicalUpdate::GetGlobalSourceState(ClientContext
 	return make_uniq<UpdateSourceState>(*this);
 }
 
-SourceResultType PhysicalUpdate::GetData(ExecutionContext &context, DataChunk &chunk,
-                                         OperatorSourceInput &input) const {
+SourceResultType PhysicalUpdate::GetDataInternal(ExecutionContext &context, DataChunk &chunk,
+                                                 OperatorSourceInput &input) const {
 	auto &state = input.global_state.Cast<UpdateSourceState>();
 	auto &g = sink_state->Cast<UpdateGlobalState>();
 	if (!return_chunk) {
 		chunk.SetCardinality(1);
-		chunk.SetValue(0, 0, Value::BIGINT(NumericCast<int64_t>(g.updated_count.load())));
+		chunk.data[0].Append(Value::BIGINT(NumericCast<int64_t>(g.updated_count.load())));
 		return SourceResultType::FINISHED;
 	}
 

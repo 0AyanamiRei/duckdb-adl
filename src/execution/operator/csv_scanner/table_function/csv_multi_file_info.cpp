@@ -8,8 +8,7 @@
 
 namespace duckdb {
 
-unique_ptr<MultiFileReaderInterface>
-CSVMultiFileInfo::InitializeInterface(ClientContext &context, MultiFileReader &reader, MultiFileList &file_list) {
+unique_ptr<MultiFileReaderInterface> CSVMultiFileInfo::CreateInterface(ClientContext &context) {
 	return make_uniq<CSVMultiFileInfo>();
 }
 
@@ -153,7 +152,6 @@ CSVSchema CSVSchemaDiscovery::SchemaDiscovery(ClientContext &context, shared_ptr
 			} else if (i < options.sql_type_list.size()) {
 				continue;
 			}
-			D_ASSERT(return_types[i].id() == LogicalTypeId::BOOLEAN);
 			// we default to varchar if all files are empty or only have a header after all the sniffing
 			return_types[i] = LogicalType::VARCHAR;
 		}
@@ -181,7 +179,10 @@ void CSVMultiFileInfo::BindReader(ClientContext &context, vector<LogicalType> &r
 			names = options.name_list;
 			return_types = options.sql_type_list;
 		}
-		D_ASSERT(return_types.size() == names.size());
+		if (return_types.size() != names.size()) {
+			throw BinderException("read_csv: mismatch between the number of column names (%d) and column types (%d)",
+			                      names.size(), return_types.size());
+		}
 		csv_data.options.dialect_options.num_cols = names.size();
 
 		bind_data.multi_file_reader->BindOptions(bind_data.file_options, multi_file_list, return_types, names,
@@ -235,6 +236,13 @@ void CSVMultiFileInfo::FinalizeBindData(MultiFileBindData &multi_file_data) {
 			} else {
 				options.force_not_null.push_back(false);
 			}
+		}
+	}
+	for (auto &type : multi_file_data.types) {
+		if (type.id() == LogicalTypeId::SQLNULL) {
+			// If after performing all the type detection of all files,
+			// we can't tell the type of column, we default to the highest type, a VARCHAR.
+			type = LogicalType::VARCHAR;
 		}
 	}
 	csv_data.Finalize();
@@ -360,13 +368,15 @@ bool CSVFileScan::TryInitializeScan(ClientContext &context, GlobalTableFunctionS
 	return true;
 }
 
-void CSVFileScan::Scan(ClientContext &context, GlobalTableFunctionState &global_state,
-                       LocalTableFunctionState &local_state, DataChunk &chunk) {
+AsyncResult CSVFileScan::Scan(ClientContext &context, GlobalTableFunctionState &global_state,
+                              LocalTableFunctionState &local_state, DataChunk &chunk) {
 	auto &lstate = local_state.Cast<CSVLocalState>();
 	if (lstate.csv_reader->FinishedIterator()) {
-		return;
+		return AsyncResult(SourceResultType::FINISHED);
 	}
 	lstate.csv_reader->Flush(chunk);
+	return chunk.size() == 0 ? AsyncResult(SourceResultType::FINISHED)
+	                         : AsyncResult(SourceResultType::HAVE_MORE_OUTPUT);
 }
 
 void CSVFileScan::FinishFile(ClientContext &context, GlobalTableFunctionState &global_state) {
@@ -409,6 +419,10 @@ double CSVFileScan::GetProgressInFile(ClientContext &context) {
 	}
 	double file_progress = total_bytes_read / static_cast<double>(file_size);
 	return file_progress * 100.0;
+}
+
+FileGlobInput CSVMultiFileInfo::GetGlobInput() {
+	return FileGlobInput(FileGlobOptions::FALLBACK_GLOB, "csv");
 }
 
 } // namespace duckdb

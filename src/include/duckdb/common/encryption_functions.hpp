@@ -1,48 +1,49 @@
+//===----------------------------------------------------------------------===//
+//                         DuckDB
+//
+// duckdb/common/encryption_functions.hpp
+//
+//
+//===----------------------------------------------------------------------===//
+
 #pragma once
 
 #include "duckdb/common/helper.hpp"
-#include "duckdb/common/types/value.hpp"
-#include "duckdb/common/encryption_state.hpp"
-#include "duckdb/common/encryption_key_manager.hpp"
-
-#ifndef DUCKDB_AMALGAMATION
-#include "duckdb/storage/object_cache.hpp"
-#endif
+#include "duckdb/common/encryption_types.hpp"
+#include "duckdb/common/serializer/memory_stream.hpp"
 
 namespace duckdb {
 
-struct EncryptionTag {
-	EncryptionTag() = default;
+class DatabaseInstance;
+class AttachedDatabase;
+class FileBuffer;
 
-	data_ptr_t data() {
-		return tag;
+class AdditionalAuthenticatedData {
+public:
+	explicit AdditionalAuthenticatedData(Allocator &allocator)
+	    : additional_authenticated_data(make_uniq<MemoryStream>(allocator, INITIAL_AAD_CAPACITY)) {
+	}
+	virtual ~AdditionalAuthenticatedData();
+
+public:
+	template <typename T>
+	void WriteData(const T &val) {
+		additional_authenticated_data->WriteData(reinterpret_cast<const_data_ptr_t>(&val), sizeof(val));
 	}
 
-	idx_t size() const {
-		return MainHeader::AES_TAG_LEN;
-	}
+public:
+	void WriteStringData(const std::string &val) const;
+	data_ptr_t data() const;
+	idx_t size() const;
 
 private:
-	data_t tag[MainHeader::AES_TAG_LEN];
-};
+	static constexpr uint32_t INITIAL_AAD_CAPACITY = 32;
 
-struct EncryptionNonce {
-	EncryptionNonce() = default;
-
-	data_ptr_t data() {
-		return nonce;
-	}
-
-	idx_t size() const {
-		return MainHeader::AES_NONCE_LEN;
-	}
-
-private:
-	data_t nonce[MainHeader::AES_NONCE_LEN];
+protected:
+	unique_ptr<MemoryStream> additional_authenticated_data;
 };
 
 class EncryptionEngine {
-
 public:
 	EncryptionEngine();
 	~EncryptionEngine();
@@ -56,67 +57,14 @@ public:
 	static void AddTempKeyToCache(DatabaseInstance &db);
 
 	//! Encryption Functions
-	static void EncryptBlock(DatabaseInstance &db, const string &key_id, FileBuffer &block,
+	static void EncryptBlock(AttachedDatabase &attached_db, const string &key_id, FileBuffer &block,
 	                         FileBuffer &temp_buffer_manager, uint64_t delta);
-	static void DecryptBlock(DatabaseInstance &db, const string &key_id, data_ptr_t internal_buffer,
+	static void DecryptBlock(AttachedDatabase &attached_db, const string &key_id, data_ptr_t internal_buffer,
 	                         uint64_t block_size, uint64_t delta);
 
 	static void EncryptTemporaryBuffer(DatabaseInstance &db, data_ptr_t buffer, idx_t buffer_size, data_ptr_t metadata);
-	static void DecryptBuffer(EncryptionState &encryption_state, const_data_ptr_t temp_key, data_ptr_t buffer,
-	                          idx_t buffer_size, data_ptr_t metadata);
+
 	static void DecryptTemporaryBuffer(DatabaseInstance &db, data_ptr_t buffer, idx_t buffer_size, data_ptr_t metadata);
-};
-
-class EncryptionTypes {
-
-public:
-	enum CipherType : uint8_t { UNKNOWN = 0, GCM = 1, CTR = 2, CBC = 3 };
-	enum KeyDerivationFunction : uint8_t { DEFAULT = 0, SHA256 = 1, PBKDF2 = 2 };
-
-	string CipherToString(CipherType cipher_p) const {
-		switch (cipher_p) {
-		case GCM:
-			return "gcm";
-		case CTR:
-			return "ctr";
-		case CBC:
-			return "cbc";
-		default:
-			return "unknown";
-		}
-	}
-
-	static CipherType StringToCipher(const string &encryption_cipher) {
-		if (encryption_cipher == "gcm") {
-			return CipherType::GCM;
-		} else if (encryption_cipher == "ctr") {
-			return CipherType::CTR;
-		} else if (encryption_cipher == "cbc") {
-			return CipherType::CBC;
-		}
-		return CipherType::UNKNOWN;
-	}
-
-	string KDFToString(KeyDerivationFunction kdf_p) const {
-		switch (kdf_p) {
-		case SHA256:
-			return "sha256";
-		case PBKDF2:
-			return "pbkdf2";
-		default:
-			return "default";
-		}
-	}
-
-	KeyDerivationFunction StringToKDF(const string &key_derivation_function) const {
-		if (key_derivation_function == "sha256") {
-			return KeyDerivationFunction::SHA256;
-		} else if (key_derivation_function == "pbkdf2") {
-			return KeyDerivationFunction::PBKDF2;
-		} else {
-			return KeyDerivationFunction::DEFAULT;
-		}
-	}
 };
 
 } // namespace duckdb

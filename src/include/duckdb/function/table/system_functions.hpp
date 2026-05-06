@@ -18,7 +18,7 @@ struct PragmaCollations {
 };
 
 struct PragmaTableInfo {
-	static void GetColumnInfo(TableCatalogEntry &table, const ColumnDefinition &column, DataChunk &output, idx_t index);
+	static void GetColumnInfo(TableCatalogEntry &table, const ColumnDefinition &column, DataChunk &output);
 
 	static void RegisterFunction(BuiltinFunctions &set);
 };
@@ -47,6 +47,10 @@ struct DuckDBSchemasFun {
 	static void RegisterFunction(BuiltinFunctions &set);
 };
 
+struct DuckDBConnectionCountFun {
+	static void RegisterFunction(BuiltinFunctions &set);
+};
+
 struct DuckDBApproxDatabaseCountFun {
 	static void RegisterFunction(BuiltinFunctions &set);
 };
@@ -56,6 +60,10 @@ struct DuckDBColumnsFun {
 };
 
 struct DuckDBConstraintsFun {
+	static void RegisterFunction(BuiltinFunctions &set);
+};
+
+struct DuckDBCoordinateSystemsFun {
 	static void RegisterFunction(BuiltinFunctions &set);
 };
 
@@ -107,6 +115,10 @@ struct DuckDBMemoryFun {
 	static void RegisterFunction(BuiltinFunctions &set);
 };
 
+struct DuckDBEvictionQueuesFun {
+	static void RegisterFunction(BuiltinFunctions &set);
+};
+
 struct DuckDBExternalFileCacheFun {
 	static void RegisterFunction(BuiltinFunctions &set);
 };
@@ -120,6 +132,10 @@ struct DuckDBSecretTypesFun {
 };
 
 struct DuckDBSequencesFun {
+	static void RegisterFunction(BuiltinFunctions &set);
+};
+
+struct DuckDBTriggersFun {
 	static void RegisterFunction(BuiltinFunctions &set);
 };
 
@@ -151,6 +167,14 @@ struct DuckDBViewsFun {
 	static void RegisterFunction(BuiltinFunctions &set);
 };
 
+struct EnableLoggingFun {
+	static void RegisterFunction(BuiltinFunctions &set);
+};
+
+struct EnableProfilingFun {
+	static void RegisterFunction(BuiltinFunctions &set);
+};
+
 struct TestType {
 	TestType(LogicalType type_p, string name_p)
 	    : type(std::move(type_p)), name(std::move(name_p)), min_value(Value::MinimumValue(type)),
@@ -168,7 +192,7 @@ struct TestType {
 
 struct TestAllTypesFun {
 	static void RegisterFunction(BuiltinFunctions &set);
-	static vector<TestType> GetTestTypes(bool large_enum = false);
+	static vector<TestType> GetTestTypes(bool large_enum = false, bool large_bignum = false);
 };
 
 struct TestVectorTypesFun {

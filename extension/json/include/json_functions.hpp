@@ -28,8 +28,7 @@ public:
 	unique_ptr<FunctionData> Copy() const override;
 	bool Equals(const FunctionData &other_p) const override;
 	static JSONCommon::JSONPathType CheckPath(const Value &path_val, string &path, idx_t &len);
-	static unique_ptr<FunctionData> Bind(ClientContext &context, ScalarFunction &bound_function,
-	                                     vector<unique_ptr<Expression>> &arguments);
+	static unique_ptr<FunctionData> Bind(BindScalarFunctionInput &input);
 
 public:
 	const bool constant;
@@ -44,8 +43,7 @@ public:
 	JSONReadManyFunctionData(vector<string> paths_p, vector<idx_t> lens_p);
 	unique_ptr<FunctionData> Copy() const override;
 	bool Equals(const FunctionData &other_p) const override;
-	static unique_ptr<FunctionData> Bind(ClientContext &context, ScalarFunction &bound_function,
-	                                     vector<unique_ptr<Expression>> &arguments);
+	static unique_ptr<FunctionData> Bind(BindScalarFunctionInput &input);
 
 public:
 	const vector<string> paths;
@@ -75,9 +73,9 @@ public:
 	                                                optional_ptr<ReplacementScanData> data);
 	static TableFunction GetReadJSONTableFunction(shared_ptr<JSONScanInfo> function_info);
 	static CopyFunction GetJSONCopyFunction();
-	static void RegisterSimpleCastFunctions(CastFunctionSet &casts);
-	static void RegisterJSONCreateCastFunctions(CastFunctionSet &casts);
-	static void RegisterJSONTransformCastFunctions(CastFunctionSet &casts);
+	static void RegisterSimpleCastFunctions(ExtensionLoader &loader);
+	static void RegisterJSONCreateCastFunctions(ExtensionLoader &loader);
+	static void RegisterJSONTransformCastFunctions(ExtensionLoader &loader);
 
 private:
 	// Scalar functions
@@ -90,6 +88,8 @@ private:
 	static ScalarFunctionSet GetArrayToJSONFunction();
 	static ScalarFunctionSet GetRowToJSONFunction();
 	static ScalarFunctionSet GetMergePatchFunction();
+	static ScalarFunctionSet GetMergePatchDiffFunction();
+	static ScalarFunctionSet GetDeepMergeFunction();
 
 	static ScalarFunctionSet GetStructureFunction();
 	static ScalarFunctionSet GetTransformFunction();
@@ -107,6 +107,8 @@ private:
 	static ScalarFunctionSet GetSerializePlanFunction();
 
 	static ScalarFunctionSet GetPrettyPrintFunction();
+	static ScalarFunctionSet GetNormalizeFunction();
+	static ScalarFunctionSet GetStripNullsFunction();
 
 	static PragmaFunctionSet GetExecuteJsonSerializedSqlPragmaFunction();
 

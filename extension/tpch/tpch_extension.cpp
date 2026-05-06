@@ -1,15 +1,12 @@
-#include "tpch_extension.hpp"
-
-#ifndef DUCKDB_AMALGAMATION
 #include "duckdb/function/table_function.hpp"
-#include "duckdb/parser/parsed_data/create_view_info.hpp"
-#include "duckdb/parser/parser.hpp"
-#include "duckdb/parser/statement/select_statement.hpp"
+#include "duckdb/main/attached_database.hpp"
+#include "duckdb/main/client_data.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
-#include "duckdb/transaction/transaction.hpp"
-#endif
+#include "duckdb/catalog/catalog_search_path.hpp"
+#include "duckdb/planner/binder.hpp"
 
 #include "dbgen/dbgen.hpp"
+#include "tpch_extension.hpp"
 
 namespace duckdb {
 
@@ -27,9 +24,16 @@ struct DBGenFunctionData : public TableFunctionData {
 	int step = -1;
 };
 
-static duckdb::unique_ptr<FunctionData> DbgenBind(ClientContext &context, TableFunctionBindInput &input,
-                                                  vector<LogicalType> &return_types, vector<string> &names) {
+static unique_ptr<FunctionData> DbgenBind(ClientContext &context, TableFunctionBindInput &input,
+                                          vector<LogicalType> &return_types, vector<string> &names) {
 	auto result = make_uniq<DBGenFunctionData>();
+
+	// Set the current catalog and schema.
+	const auto current_catalog = DatabaseManager::GetDefaultDatabase(context);
+	const auto current_schema = ClientData::Get(context).catalog_search_path->GetDefault().schema;
+	result->catalog = current_catalog;
+	result->schema = current_schema;
+
 	for (auto &kv : input.named_parameters) {
 		if (kv.second.IsNull()) {
 			throw BinderException("Cannot use NULL as function argument");
@@ -56,7 +60,10 @@ static duckdb::unique_ptr<FunctionData> DbgenBind(ClientContext &context, TableF
 	if (input.binder) {
 		auto &catalog = Catalog::GetCatalog(context, result->catalog);
 		auto &properties = input.binder->GetStatementProperties();
-		properties.RegisterDBModify(catalog, context);
+		DatabaseModificationType modification;
+		modification |= DatabaseModificationType::CREATE_CATALOG_ENTRY;
+		modification |= DatabaseModificationType::INSERT_DATA;
+		properties.RegisterDBModify(catalog, context, modification);
 	}
 	return_types.emplace_back(LogicalType::BOOLEAN);
 	names.emplace_back("Success");
@@ -105,12 +112,16 @@ static void TPCHQueryFunction(ClientContext &context, TableFunctionInput &data_p
 		return;
 	}
 	idx_t chunk_count = 0;
+
+	// query_nr, INTEGER
+	auto &query_nr = output.data[0];
+	// query, VARCHAR
+	auto &query_col = output.data[1];
+
 	while (data.offset < tpch_queries && chunk_count < STANDARD_VECTOR_SIZE) {
 		auto query = tpch::DBGenWrapper::GetQuery(data.offset + 1);
-		// "query_nr", PhysicalType::INT32
-		output.SetValue(0, chunk_count, Value::INTEGER((int32_t)data.offset + 1));
-		// "query", PhysicalType::VARCHAR
-		output.SetValue(1, chunk_count, Value(query));
+		query_nr.Append(Value::INTEGER((int32_t)data.offset + 1));
+		query_col.Append(Value(query));
 		data.offset++;
 		chunk_count++;
 	}
@@ -141,16 +152,21 @@ static void TPCHQueryAnswerFunction(ClientContext &context, TableFunctionInput &
 		return;
 	}
 	idx_t chunk_count = 0;
+
+	// query_nr, INTEGER
+	auto &query_nr = output.data[0];
+	// scale_factor, DOUBLE
+	auto &scale_factor = output.data[1];
+	// answer, VARCHAR
+	auto &answer_col = output.data[2];
+
 	while (data.offset < total_answers && chunk_count < STANDARD_VECTOR_SIZE) {
 		idx_t cur_query = data.offset % tpch_queries;
 		idx_t cur_sf = data.offset / tpch_queries;
 		auto answer = tpch::DBGenWrapper::GetAnswer(scale_factors[cur_sf], cur_query + 1);
-		// "query_nr", PhysicalType::INT32
-		output.SetValue(0, chunk_count, Value::INTEGER((int32_t)cur_query + 1));
-		// "scale_factor", PhysicalType::INT32
-		output.SetValue(1, chunk_count, Value::DOUBLE(scale_factors[cur_sf]));
-		// "query", PhysicalType::VARCHAR
-		output.SetValue(2, chunk_count, Value(answer));
+		query_nr.Append(Value::INTEGER((int32_t)cur_query + 1));
+		scale_factor.Append(Value::DOUBLE(scale_factors[cur_sf]));
+		answer_col.Append(Value(answer));
 		data.offset++;
 		chunk_count++;
 	}

@@ -1,6 +1,7 @@
 #include "duckdb/parser/constraints/unique_constraint.hpp"
-
 #include "duckdb/parser/keyword_helper.hpp"
+#include "duckdb/common/enum_util.hpp"
+#include "duckdb/common/enums/index_constraint_type.hpp"
 
 namespace duckdb {
 
@@ -26,7 +27,7 @@ string UniqueConstraint::ToString() const {
 		if (i > 0) {
 			base += ", ";
 		}
-		base += KeywordHelper::WriteOptionallyQuoted(columns[i]);
+		base += SQLIdentifier(columns[i]);
 	}
 	return base + ")";
 }

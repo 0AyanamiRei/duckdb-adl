@@ -10,8 +10,10 @@
 
 #include "writer/primitive_column_writer.hpp"
 #include "writer/parquet_write_operators.hpp"
+#include "parquet_bss_encoder.hpp"
 #include "parquet_dbp_encoder.hpp"
 #include "parquet_dlba_encoder.hpp"
+#include "parquet_rle_bp_decoder.hpp"
 #include "parquet_rle_bp_encoder.hpp"
 #include "duckdb/common/primitive_dictionary.hpp"
 
@@ -68,7 +70,9 @@ class StandardColumnWriterState : public PrimitiveColumnWriterState {
 public:
 	StandardColumnWriterState(ParquetWriter &writer, duckdb_parquet::RowGroup &row_group, idx_t col_idx)
 	    : PrimitiveColumnWriterState(writer, row_group, col_idx),
-	      dictionary(BufferAllocator::Get(writer.GetContext()), writer.DictionarySizeLimit(),
+	      dictionary(BufferAllocator::Get(writer.GetContext()),
+	                 writer.DictionarySizeLimit().IsValid() ? writer.DictionarySizeLimit().GetIndex()
+	                                                        : NumericCast<idx_t>(row_group.num_rows) / 5,
 	                 writer.StringDictionaryPageSizeLimit()),
 	      encoding(duckdb_parquet::Encoding::PLAIN) {
 	}
@@ -92,7 +96,8 @@ public:
 	    : encoding(encoding_p), dbp_initialized(false), dbp_encoder(total_value_count), dlba_initialized(false),
 	      dlba_encoder(total_value_count, total_string_size), bss_initialized(false),
 	      bss_encoder(total_value_count, sizeof(TGT)), dictionary(dictionary_p), dict_written_value(false),
-	      dict_bit_width(RleBpDecoder::ComputeBitWidth(dictionary.GetSize())), dict_encoder(dict_bit_width) {
+	      dict_bit_width(RleBpDecoder::ComputeBitWidthFromValueCount(dictionary.GetSize())),
+	      dict_encoder(dict_bit_width) {
 	}
 	duckdb_parquet::Encoding::type encoding;
 
@@ -114,17 +119,16 @@ public:
 template <class SRC, class TGT, class OP = ParquetCastOperator>
 class StandardColumnWriter : public PrimitiveColumnWriter {
 public:
-	StandardColumnWriter(ParquetWriter &writer, const ParquetColumnSchema &column_schema,
-	                     vector<string> schema_path_p, // NOLINT
-	                     bool can_have_nulls)
-	    : PrimitiveColumnWriter(writer, column_schema, std::move(schema_path_p), can_have_nulls) {
+	StandardColumnWriter(ParquetWriter &writer, ParquetColumnSchema &&column_schema, vector<string> schema_path_p)
+	    : PrimitiveColumnWriter(writer, std::move(column_schema), std::move(schema_path_p)) {
 	}
 	~StandardColumnWriter() override = default;
 
 public:
 	unique_ptr<ColumnWriterState> InitializeWriteState(duckdb_parquet::RowGroup &row_group) override {
 		auto result = make_uniq<StandardColumnWriterState<SRC, TGT, OP>>(writer, row_group, row_group.columns.size());
-		result->encoding = duckdb_parquet::Encoding::RLE_DICTIONARY;
+		result->encoding = writer.GetParquetVersion() == ParquetVersion::V1 ? duckdb_parquet::Encoding::PLAIN_DICTIONARY
+		                                                                    : duckdb_parquet::Encoding::RLE_DICTIONARY;
 		RegisterToRowGroup(row_group);
 		return std::move(result);
 	}
@@ -148,6 +152,8 @@ public:
 			}
 			page_state.dbp_encoder.FinishWrite(temp_writer);
 			break;
+		case duckdb_parquet::Encoding::PLAIN_DICTIONARY:
+			// PLAIN_DICTIONARY can be treated the same as RLE_DICTIONARY
 		case duckdb_parquet::Encoding::RLE_DICTIONARY:
 			D_ASSERT(page_state.dict_bit_width != 0);
 			if (!page_state.dict_written_value) {
@@ -195,17 +201,18 @@ public:
 
 		const bool check_parent_empty = parent && !parent->is_empty.empty();
 		const idx_t parent_index = state.definition_levels.size();
+		D_ASSERT(!check_parent_empty || parent_index < parent->is_empty.size());
 
 		const idx_t vcount =
 		    check_parent_empty ? parent->definition_levels.size() - state.definition_levels.size() : count;
 
 		const auto &validity = FlatVector::Validity(vector);
 
-		if (!check_parent_empty && validity.AllValid()) {
+		if (!check_parent_empty && validity.CannotHaveNull()) {
 			// Fast path
 			for (; vector_index < vcount; vector_index++) {
 				const auto &src_value = data_ptr[vector_index];
-				state.dictionary.Insert(src_value);
+				state.dictionary.template Insert<true>(src_value);
 				state.total_value_count++;
 				state.total_string_size += DlbaEncoder::GetStringSize(src_value);
 			}
@@ -216,7 +223,7 @@ public:
 				}
 				if (validity.RowIsValid(vector_index)) {
 					const auto &src_value = data_ptr[vector_index];
-					state.dictionary.Insert(src_value);
+					state.dictionary.template Insert<true>(src_value);
 					state.total_value_count++;
 					state.total_string_size += DlbaEncoder::GetStringSize(src_value);
 				}
@@ -253,7 +260,7 @@ public:
 				}
 			}
 		} else {
-			state.key_bit_width = RleBpDecoder::ComputeBitWidth(state.dictionary.GetSize());
+			state.key_bit_width = RleBpDecoder::ComputeBitWidthFromValueCount(state.dictionary.GetSize());
 		}
 	}
 
@@ -263,7 +270,8 @@ public:
 
 	bool HasDictionary(PrimitiveColumnWriterState &state_p) override {
 		auto &state = state_p.Cast<StandardColumnWriterState<SRC, TGT, OP>>();
-		return state.encoding == duckdb_parquet::Encoding::RLE_DICTIONARY;
+		return state.encoding == duckdb_parquet::Encoding::RLE_DICTIONARY ||
+		       state.encoding == duckdb_parquet::Encoding::PLAIN_DICTIONARY;
 	}
 
 	idx_t DictionarySize(PrimitiveColumnWriterState &state_p) override {
@@ -274,7 +282,7 @@ public:
 	void WriteVector(WriteStream &temp_writer, ColumnWriterStatistics *stats, ColumnWriterPageState *page_state_p,
 	                 Vector &input_column, idx_t chunk_start, idx_t chunk_end) override {
 		const auto &mask = FlatVector::Validity(input_column);
-		if (mask.AllValid()) {
+		if (mask.CannotHaveNull()) {
 			WriteVectorInternal<true>(temp_writer, stats, page_state_p, input_column, chunk_start, chunk_end);
 		} else {
 			WriteVectorInternal<false>(temp_writer, stats, page_state_p, input_column, chunk_start, chunk_end);
@@ -283,7 +291,8 @@ public:
 
 	void FlushDictionary(PrimitiveColumnWriterState &state_p, ColumnWriterStatistics *stats) override {
 		auto &state = state_p.Cast<StandardColumnWriterState<SRC, TGT, OP>>();
-		D_ASSERT(state.encoding == duckdb_parquet::Encoding::RLE_DICTIONARY);
+		D_ASSERT(state.encoding == duckdb_parquet::Encoding::RLE_DICTIONARY ||
+		         state.encoding == duckdb_parquet::Encoding::PLAIN_DICTIONARY);
 
 		if (writer.EnableBloomFilters()) {
 			state.bloom_filter =
@@ -308,7 +317,8 @@ public:
 	idx_t GetRowSize(const Vector &vector, const idx_t index,
 	                 const PrimitiveColumnWriterState &state_p) const override {
 		auto &state = state_p.Cast<StandardColumnWriterState<SRC, TGT, OP>>();
-		if (state.encoding == duckdb_parquet::Encoding::RLE_DICTIONARY) {
+		if (state.encoding == duckdb_parquet::Encoding::RLE_DICTIONARY ||
+		    state.encoding == duckdb_parquet::Encoding::PLAIN_DICTIONARY) {
 			return (state.key_bit_width + 7) / 8;
 		} else {
 			return OP::template GetRowSize<SRC, TGT>(vector, index);
@@ -326,6 +336,8 @@ private:
 		const auto *data_ptr = FlatVector::GetData<SRC>(input_column);
 
 		switch (page_state.encoding) {
+		case duckdb_parquet::Encoding::PLAIN_DICTIONARY:
+			// PLAIN_DICTIONARY can be treated the same as RLE_DICTIONARY
 		case duckdb_parquet::Encoding::RLE_DICTIONARY: {
 			idx_t r = chunk_start;
 			if (!page_state.dict_written_value) {
@@ -424,7 +436,7 @@ private:
 		}
 		case duckdb_parquet::Encoding::PLAIN: {
 			D_ASSERT(page_state.encoding == duckdb_parquet::Encoding::PLAIN);
-			if (mask.AllValid()) {
+			if (mask.CannotHaveNull()) {
 				TemplatedWritePlain<SRC, TGT, OP, true>(input_column, stats, chunk_start, chunk_end, mask, temp_writer);
 			} else {
 				TemplatedWritePlain<SRC, TGT, OP, false>(input_column, stats, chunk_start, chunk_end, mask,

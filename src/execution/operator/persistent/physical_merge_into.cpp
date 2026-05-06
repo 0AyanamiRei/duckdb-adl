@@ -10,7 +10,6 @@ PhysicalMergeInto::PhysicalMergeInto(PhysicalPlan &physical_plan, vector<Logical
                                      bool return_chunk_p)
     : PhysicalOperator(physical_plan, PhysicalOperatorType::MERGE_INTO, std::move(types), 1),
       row_id_index(row_id_index), source_marker(source_marker), parallel(parallel_p), return_chunk(return_chunk_p) {
-
 	map<MergeActionCondition, MergeActionRange> ranges;
 	for (auto &entry : actions_p) {
 		MergeActionRange range;
@@ -87,7 +86,7 @@ public:
 				state.insert_executor = make_uniq<ExpressionExecutor>(context.client, action->expressions);
 				vector<LogicalType> insert_types;
 				for (auto &expr : action->expressions) {
-					insert_types.push_back(expr->return_type);
+					insert_types.push_back(expr->GetReturnType());
 				}
 				state.insert_chunk = make_uniq<DataChunk>();
 				state.insert_chunk->Initialize(context.client, insert_types);
@@ -287,17 +286,15 @@ void PhysicalMergeInto::ComputeMatches(MergeIntoLocalState &local_state, DataChu
 	not_matched.count = 0;
 	not_matched_by_source.count = 0;
 
-	UnifiedVectorFormat row_id_data;
-	chunk.data[row_id_index].ToUnifiedFormat(chunk.size(), row_id_data);
+	auto row_id_validity = chunk.data[row_id_index].Validity(chunk.size());
 	if (source_marker.IsValid()) {
 		// source marker - check both row id and source marker
-		UnifiedVectorFormat source_marker_data;
-		chunk.data[source_marker.GetIndex()].ToUnifiedFormat(chunk.size(), source_marker_data);
+		auto source_marker_validity = chunk.data[source_marker.GetIndex()].Validity(chunk.size());
 		for (idx_t i = 0; i < chunk.size(); i++) {
-			if (!source_marker_data.validity.RowIsValid(source_marker_data.sel->get_index(i))) {
+			if (!source_marker_validity.IsValid(i)) {
 				// source marker is NULL - no source match
 				not_matched_by_source.sel.set_index(not_matched_by_source.count++, i);
-			} else if (!row_id_data.validity.RowIsValid(row_id_data.sel->get_index(i))) {
+			} else if (!row_id_validity.IsValid(i)) {
 				// target marker is NULL - no target match
 				not_matched.sel.set_index(not_matched.count++, i);
 			} else {
@@ -308,8 +305,7 @@ void PhysicalMergeInto::ComputeMatches(MergeIntoLocalState &local_state, DataChu
 	} else {
 		// no source marker - only check row-ids
 		for (idx_t i = 0; i < chunk.size(); i++) {
-			auto idx = row_id_data.sel->get_index(i);
-			if (row_id_data.validity.RowIsValid(idx)) {
+			if (row_id_validity.IsValid(i)) {
 				// match
 				matched.sel.set_index(matched.count++, i);
 			} else {
@@ -456,12 +452,12 @@ unique_ptr<LocalSourceState> PhysicalMergeInto::GetLocalSourceState(ExecutionCon
 	return make_uniq<MergeLocalSourceState>(context, *this, gstate.Cast<MergeGlobalSourceState>());
 }
 
-SourceResultType PhysicalMergeInto::GetData(ExecutionContext &context, DataChunk &chunk,
-                                            OperatorSourceInput &input) const {
+SourceResultType PhysicalMergeInto::GetDataInternal(ExecutionContext &context, DataChunk &chunk,
+                                                    OperatorSourceInput &input) const {
 	auto &g = sink_state->Cast<MergeIntoGlobalState>();
 	if (!return_chunk) {
 		chunk.SetCardinality(1);
-		chunk.SetValue(0, 0, Value::BIGINT(NumericCast<int64_t>(g.merged_count.load())));
+		chunk.data[0].Append(Value::BIGINT(NumericCast<int64_t>(g.merged_count.load())));
 		return SourceResultType::FINISHED;
 	}
 	auto &gstate = input.global_state.Cast<MergeGlobalSourceState>();
@@ -473,10 +469,17 @@ SourceResultType PhysicalMergeInto::GetData(ExecutionContext &context, DataChunk
 			// no action to scan from
 			continue;
 		}
+		// found a good one
+		break;
+	}
+	if (lstate.index < actions.size()) {
+		auto &action = *actions[lstate.index];
+
 		auto &child_gstate = *gstate.global_states[lstate.index];
 		auto &child_lstate = *lstate.local_states[lstate.index];
 		OperatorSourceInput source_input {child_gstate, child_lstate, input.interrupt_state};
 
+		lstate.scan_chunk.Reset();
 		auto result = action.op->GetData(context, lstate.scan_chunk, source_input);
 		if (lstate.scan_chunk.size() > 0) {
 			// construct the result chunk
@@ -499,15 +502,19 @@ SourceResultType PhysicalMergeInto::GetData(ExecutionContext &context, DataChunk
 				throw InternalException("Unsupported merge action for RETURNING");
 			}
 			Value merge_action(merge_action_name);
-			chunk.data.back().Reference(merge_action);
+			chunk.data.back().Reference(merge_action, count_t(lstate.scan_chunk.size()));
 			chunk.SetCardinality(lstate.scan_chunk.size());
 		}
 
 		if (result != SourceResultType::FINISHED) {
 			return result;
-		}
-		if (chunk.size() != 0) {
-			return SourceResultType::HAVE_MORE_OUTPUT;
+		} else {
+			lstate.index++;
+			if (lstate.index < actions.size()) {
+				return SourceResultType::HAVE_MORE_OUTPUT;
+			} else {
+				return SourceResultType::FINISHED;
+			}
 		}
 	}
 	return SourceResultType::FINISHED;

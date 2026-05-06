@@ -1,13 +1,33 @@
-#include "reader/variant/variant_shredded_conversion.hpp"
-#include "column_reader.hpp"
-#include "utf8proc_wrapper.hpp"
+#include <stdint.h>
+#include <map>
+#include <string>
+#include <utility>
 
+#include "duckdb/common/vector/list_vector.hpp"
+#include "duckdb/common/vector/struct_vector.hpp"
+#include "reader/variant/variant_shredded_conversion.hpp"
+#include "utf8proc_wrapper.hpp"
 #include "duckdb/common/types/timestamp.hpp"
-#include "duckdb/common/types/decimal.hpp"
-#include "duckdb/common/types/uuid.hpp"
-#include "duckdb/common/types/time.hpp"
 #include "duckdb/common/types/date.hpp"
 #include "duckdb/common/types/blob.hpp"
+#include "duckdb/common/assert.hpp"
+#include "duckdb/common/enum_util.hpp"
+#include "duckdb/common/exception.hpp"
+#include "duckdb/common/hugeint.hpp"
+#include "duckdb/common/optional_ptr.hpp"
+#include "duckdb/common/string.hpp"
+#include "duckdb/common/typedefs.hpp"
+#include "duckdb/common/types.hpp"
+#include "duckdb/common/types/datetime.hpp"
+#include "duckdb/common/types/selection_vector.hpp"
+#include "duckdb/common/types/string_type.hpp"
+#include "duckdb/common/types/validity_mask.hpp"
+#include "duckdb/common/types/value.hpp"
+#include "duckdb/common/types/variant_value.hpp"
+#include "duckdb/common/types/vector.hpp"
+#include "duckdb/common/vector.hpp"
+#include "duckdb/common/vector/unified_vector_format.hpp"
+#include "reader/variant/variant_binary_decoder.hpp"
 
 namespace duckdb {
 
@@ -57,21 +77,23 @@ template <>
 VariantValue ConvertShreddedValue<double>::Convert(double val) {
 	return VariantValue(Value::DOUBLE(val));
 }
+//! NOTE: decimal2 - not in the spec, but some writers create this regardless
+template <>
+VariantValue ConvertShreddedValue<int16_t>::ConvertDecimal(int16_t val, uint8_t width, uint8_t scale) {
+	return VariantValue(Value::DECIMAL(val, width, scale));
+}
 //! decimal4/decimal8/decimal16
 template <>
 VariantValue ConvertShreddedValue<int32_t>::ConvertDecimal(int32_t val, uint8_t width, uint8_t scale) {
-	auto value_str = Decimal::ToString(val, width, scale);
-	return VariantValue(Value(value_str));
+	return VariantValue(Value::DECIMAL(val, width, scale));
 }
 template <>
 VariantValue ConvertShreddedValue<int64_t>::ConvertDecimal(int64_t val, uint8_t width, uint8_t scale) {
-	auto value_str = Decimal::ToString(val, width, scale);
-	return VariantValue(Value(value_str));
+	return VariantValue(Value::DECIMAL(val, width, scale));
 }
 template <>
 VariantValue ConvertShreddedValue<hugeint_t>::ConvertDecimal(hugeint_t val, uint8_t width, uint8_t scale) {
-	auto value_str = Decimal::ToString(val, width, scale);
-	return VariantValue(Value(value_str));
+	return VariantValue(Value::DECIMAL(val, width, scale));
 }
 //! date
 template <>
@@ -88,11 +110,11 @@ template <>
 VariantValue ConvertShreddedValue<timestamp_tz_t>::Convert(timestamp_tz_t val) {
 	return VariantValue(Value::TIMESTAMPTZ(val));
 }
-////! timestamptz(9)
-// template <>
-// VariantValue ConvertShreddedValue<timestamp_ns_tz_t>::Convert(timestamp_ns_tz_t val) {
-//	return VariantValue(Value::TIMESTAMPNS_TZ(val));
-//}
+//! timestamptz(9)
+template <>
+VariantValue ConvertShreddedValue<timestamp_tz_ns_t>::Convert(timestamp_tz_ns_t val) {
+	return VariantValue(Value::TIMESTAMPTZNS(val));
+}
 //! timestampntz(6)
 template <>
 VariantValue ConvertShreddedValue<timestamp_t>::Convert(timestamp_t val) {
@@ -119,7 +141,7 @@ VariantValue ConvertShreddedValue<string_t>::Convert(string_t val) {
 //! uuid
 template <>
 VariantValue ConvertShreddedValue<hugeint_t>::Convert(hugeint_t val) {
-	return VariantValue(Value(UUID::ToString(val)));
+	return VariantValue(Value::UUID(val));
 }
 
 template <class T, class OP, LogicalTypeId TYPE_ID>
@@ -149,7 +171,7 @@ vector<VariantValue> ConvertTypedValues(Vector &vec, Vector &metadata, Vector &b
 	}
 
 	vector<VariantValue> ret(length);
-	if (validity.AllValid()) {
+	if (validity.CannotHaveNull()) {
 		for (idx_t i = 0; i < length; i++) {
 			auto index = typed_format.sel->get_index(i + offset);
 			if (TYPE_ID == LogicalTypeId::DECIMAL) {
@@ -174,7 +196,12 @@ vector<VariantValue> ConvertTypedValues(Vector &vec, Vector &metadata, Vector &b
 				} else {
 					ret[i] = OP::Convert(data[typed_index]);
 				}
-			} else if (value_validity.RowIsValid(value_index)) {
+			} else {
+				if (!value_validity.RowIsValid(value_index)) {
+					//! Value is missing for this field
+					continue;
+				}
+				D_ASSERT(value_validity.RowIsValid(value_index));
 				auto metadata_value = metadata_data[metadata_format.sel->get_index(i)];
 				VariantMetadata variant_metadata(metadata_value);
 				ret[i] = VariantBinaryDecoder::Decode(variant_metadata,
@@ -232,6 +259,11 @@ vector<VariantValue> VariantShreddedConversion::ConvertShreddedLeaf(Vector &meta
 	case LogicalTypeId::DECIMAL: {
 		auto physical_type = type.InternalType();
 		switch (physical_type) {
+		case PhysicalType::INT16: {
+			//! NOTE: This is not spec compliant, but some writers shred DECIMAL2
+			return ConvertTypedValues<int16_t, ConvertShreddedValue<int16_t>, LogicalTypeId::DECIMAL>(
+			    typed_value, metadata, value, offset, length, total_size);
+		}
 		case PhysicalType::INT32: {
 			return ConvertTypedValues<int32_t, ConvertShreddedValue<int32_t>, LogicalTypeId::DECIMAL>(
 			    typed_value, metadata, value, offset, length, total_size);
@@ -259,10 +291,16 @@ vector<VariantValue> VariantShreddedConversion::ConvertShreddedLeaf(Vector &meta
 		return ConvertTypedValues<dtime_t, ConvertShreddedValue<dtime_t>, LogicalTypeId::TIME>(
 		    typed_value, metadata, value, offset, length, total_size);
 	}
-	//! timestamptz(6) (timestamptz(9) not implemented in DuckDB)
+	//! timestamptz(6)
 	case LogicalTypeId::TIMESTAMP_TZ: {
 		return ConvertTypedValues<timestamp_tz_t, ConvertShreddedValue<timestamp_tz_t>, LogicalTypeId::TIMESTAMP_TZ>(
 		    typed_value, metadata, value, offset, length, total_size);
+	}
+	//! timestamptz(9)
+	case LogicalTypeId::TIMESTAMP_TZ_NS: {
+		return ConvertTypedValues<timestamp_tz_ns_t, ConvertShreddedValue<timestamp_tz_ns_t>,
+		                          LogicalTypeId::TIMESTAMP_TZ_NS>(typed_value, metadata, value, offset, length,
+		                                                          total_size);
 	}
 	//! timestampntz(6)
 	case LogicalTypeId::TIMESTAMP: {
@@ -309,7 +347,6 @@ public:
 
 } // namespace
 
-template <bool IS_REQUIRED>
 static vector<VariantValue> ConvertBinaryEncoding(Vector &metadata, Vector &value, idx_t offset, idx_t length,
                                                   idx_t total_size) {
 	UnifiedVectorFormat value_format;
@@ -320,32 +357,17 @@ static vector<VariantValue> ConvertBinaryEncoding(Vector &metadata, Vector &valu
 	UnifiedVectorFormat metadata_format;
 	metadata.ToUnifiedFormat(length, metadata_format);
 	auto metadata_data = metadata_format.GetData<string_t>(metadata_format);
+	auto metadata_validity = metadata_format.validity;
 
+	//! Fills every row with MISSING, turned into NULL later if this is not in an OBJECT field
 	vector<VariantValue> ret(length);
-	if (IS_REQUIRED) {
-		D_ASSERT(validity.CountValid(length) == length);
-		for (idx_t i = 0; i < length; i++) {
-			auto index = value_format.sel->get_index(i + offset);
-
-			D_ASSERT(validity.RowIsValid(index));
+	for (idx_t i = 0; i < length; i++) {
+		auto index = value_format.sel->get_index(i + offset);
+		if (validity.RowIsValid(index)) {
 			auto &metadata_value = metadata_data[metadata_format.sel->get_index(i)];
 			VariantMetadata variant_metadata(metadata_value);
 			auto binary_value = value_data[index].GetData();
 			ret[i] = VariantBinaryDecoder::Decode(variant_metadata, const_data_ptr_cast(binary_value));
-		}
-	} else {
-		//! Even though 'typed_value' is not present, 'value' is allowed to contain NULLs because we're scanning an
-		//! Object's shredded field.
-		//! When 'value' is null for a row, that means the Object does not contain this field
-		//! for that row.
-		for (idx_t i = 0; i < length; i++) {
-			auto index = value_format.sel->get_index(i + offset);
-			if (validity.RowIsValid(index)) {
-				auto &metadata_value = metadata_data[metadata_format.sel->get_index(i)];
-				VariantMetadata variant_metadata(metadata_value);
-				auto binary_value = value_data[index].GetData();
-				ret[i] = VariantBinaryDecoder::Decode(variant_metadata, const_data_ptr_cast(binary_value));
-			}
 		}
 	}
 	return ret;
@@ -363,11 +385,6 @@ static VariantValue ConvertPartiallyShreddedObject(vector<ShreddedVariantField> 
 	for (idx_t field_index = 0; field_index < shredded_fields.size(); field_index++) {
 		auto &shredded_field = shredded_fields[field_index];
 		auto &field_value = shredded_field.values[i];
-
-		if (field_value.IsMissing()) {
-			//! This field is missing from the value, skip it
-			continue;
-		}
 		ret.AddChild(shredded_field.field_name, std::move(field_value));
 	}
 
@@ -380,7 +397,8 @@ static VariantValue ConvertPartiallyShreddedObject(vector<ShreddedVariantField> 
 		if (unshredded.value_type != VariantValueType::OBJECT) {
 			throw InvalidInputException("Partially shredded objects have to encode Object Variants in the 'value'");
 		}
-		for (auto &item : unshredded.object_children) {
+		auto object_children = unshredded.TakeObjectChildren();
+		for (auto &item : object_children) {
 			ret.AddChild(item.first, std::move(item.second));
 		}
 	}
@@ -401,6 +419,7 @@ vector<VariantValue> VariantShreddedConversion::ConvertShreddedObject(Vector &me
 	value.ToUnifiedFormat(total_size, value_format);
 	auto value_data = value_format.GetData<string_t>(value_format);
 	auto &validity = value_format.validity;
+	(void)validity;
 
 	//! 'metadata'
 	UnifiedVectorFormat metadata_format;
@@ -418,15 +437,15 @@ vector<VariantValue> VariantShreddedConversion::ConvertShreddedObject(Vector &me
 	for (idx_t i = 0; i < fields.size(); i++) {
 		auto &field = fields[i];
 		auto &field_name = field.first;
-		auto &field_vec = *entries[i];
+		auto &field_vec = entries[i];
 
 		shredded_fields.emplace_back(field_name);
 		auto &shredded_field = shredded_fields.back();
-		shredded_field.values = Convert(metadata, field_vec, offset, length, total_size, true);
+		shredded_field.values = Convert(metadata, field_vec, offset, length, total_size);
 	}
 
 	vector<VariantValue> ret(length);
-	if (typed_validity.AllValid()) {
+	if (typed_validity.CannotHaveNull()) {
 		for (idx_t i = 0; i < length; i++) {
 			ret[i] = ConvertPartiallyShreddedObject(shredded_fields, metadata_format, value_format, i, offset);
 		}
@@ -438,7 +457,10 @@ vector<VariantValue> VariantShreddedConversion::ConvertShreddedObject(Vector &me
 			if (typed_validity.RowIsValid(typed_index)) {
 				ret[i] = ConvertPartiallyShreddedObject(shredded_fields, metadata_format, value_format, i, offset);
 			} else {
-				//! The value on this row is not an object, and guaranteed to be present
+				if (!validity.RowIsValid(value_index)) {
+					//! This object is a field in the parent object, the value is missing, skip it
+					continue;
+				}
 				D_ASSERT(validity.RowIsValid(value_index));
 				auto &metadata_value = metadata_data[metadata_format.sel->get_index(i)];
 				VariantMetadata variant_metadata(metadata_value);
@@ -457,7 +479,7 @@ vector<VariantValue> VariantShreddedConversion::ConvertShreddedObject(Vector &me
 vector<VariantValue> VariantShreddedConversion::ConvertShreddedArray(Vector &metadata, Vector &value,
                                                                      Vector &typed_value, idx_t offset, idx_t length,
                                                                      idx_t total_size) {
-	auto &child = ListVector::GetEntry(typed_value);
+	auto &child = ListVector::GetChildMutable(typed_value);
 	auto list_size = ListVector::GetListSize(typed_value);
 
 	//! 'value'
@@ -478,27 +500,30 @@ vector<VariantValue> VariantShreddedConversion::ConvertShreddedArray(Vector &met
 	auto &value_validity = value_format.validity;
 
 	vector<VariantValue> ret(length);
-	if (validity.AllValid()) {
+	if (validity.CannotHaveNull()) {
 		//! We can be sure that none of the values are binary encoded
 		for (idx_t i = 0; i < length; i++) {
 			auto typed_index = list_format.sel->get_index(i + offset);
-			//! FIXME: next 4 lines duplicated below
 			auto entry = list_data[typed_index];
-			Vector child_metadata(metadata.GetValue(i));
+			Vector child_metadata(metadata.GetValue(i), count_t(entry.length));
 			ret[i] = VariantValue(VariantValueType::ARRAY);
-			ret[i].array_items = Convert(child_metadata, child, entry.offset, entry.length, list_size);
+			ret[i].SetItems(Convert(child_metadata, child, entry.offset, entry.length, list_size));
 		}
 	} else {
 		for (idx_t i = 0; i < length; i++) {
 			auto typed_index = list_format.sel->get_index(i + offset);
 			auto value_index = value_format.sel->get_index(i + offset);
 			if (validity.RowIsValid(typed_index)) {
-				//! FIXME: next 4 lines duplicate
 				auto entry = list_data[typed_index];
-				Vector child_metadata(metadata.GetValue(i));
+				Vector child_metadata(metadata.GetValue(i), count_t(entry.length));
 				ret[i] = VariantValue(VariantValueType::ARRAY);
-				ret[i].array_items = Convert(child_metadata, child, entry.offset, entry.length, list_size);
-			} else if (value_validity.RowIsValid(value_index)) {
+				ret[i].SetItems(Convert(child_metadata, child, entry.offset, entry.length, list_size));
+			} else {
+				if (!value_validity.RowIsValid(value_index)) {
+					//! Value is missing for this field
+					continue;
+				}
+				D_ASSERT(value_validity.RowIsValid(value_index));
 				auto metadata_value = metadata_data[metadata_format.sel->get_index(i)];
 				VariantMetadata variant_metadata(metadata_value);
 				ret[i] = VariantBinaryDecoder::Decode(variant_metadata,
@@ -510,7 +535,7 @@ vector<VariantValue> VariantShreddedConversion::ConvertShreddedArray(Vector &met
 }
 
 vector<VariantValue> VariantShreddedConversion::Convert(Vector &metadata, Vector &group, idx_t offset, idx_t length,
-                                                        idx_t total_size, bool is_field) {
+                                                        idx_t total_size) {
 	D_ASSERT(group.GetType().id() == LogicalTypeId::STRUCT);
 
 	auto &group_entries = StructVector::GetEntries(group);
@@ -525,9 +550,9 @@ vector<VariantValue> VariantShreddedConversion::Convert(Vector &metadata, Vector
 		auto &name = group_type_children[i].first;
 		auto &vec = group_entries[i];
 		if (name == "value") {
-			value = vec.get();
+			value = &vec;
 		} else if (name == "typed_value") {
-			typed_value = vec.get();
+			typed_value = &vec;
 		} else {
 			throw InvalidInputException("Variant group can only contain 'value'/'typed_value', not: %s", name);
 		}
@@ -547,12 +572,7 @@ vector<VariantValue> VariantShreddedConversion::Convert(Vector &metadata, Vector
 			return ConvertShreddedLeaf(metadata, *value, *typed_value, offset, length, total_size);
 		}
 	} else {
-		if (is_field) {
-			return ConvertBinaryEncoding<false>(metadata, *value, offset, length, total_size);
-		} else {
-			//! Only 'value' is present, we can assume this to be 'required', so it can't contain NULLs
-			return ConvertBinaryEncoding<true>(metadata, *value, offset, length, total_size);
-		}
+		return ConvertBinaryEncoding(metadata, *value, offset, length, total_size);
 	}
 }
 

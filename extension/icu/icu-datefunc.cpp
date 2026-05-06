@@ -16,7 +16,6 @@ ICUDateFunc::BindData::BindData(const BindData &other)
 
 ICUDateFunc::BindData::BindData(const string &tz_setting_p, const string &cal_setting_p)
     : tz_setting(tz_setting_p), cal_setting(cal_setting_p) {
-
 	InitCalendar();
 }
 
@@ -67,9 +66,8 @@ unique_ptr<FunctionData> ICUDateFunc::BindData::Copy() const {
 	return make_uniq<BindData>(*this);
 }
 
-unique_ptr<FunctionData> ICUDateFunc::Bind(ClientContext &context, ScalarFunction &bound_function,
-                                           vector<duckdb::unique_ptr<Expression>> &arguments) {
-	return make_uniq<BindData>(context);
+unique_ptr<FunctionData> ICUDateFunc::Bind(BindScalarFunctionInput &input) {
+	return make_uniq<BindData>(input.GetClientContext());
 }
 
 bool ICUDateFunc::TrySetTimeZone(icu::Calendar *calendar, const string_t &tz_id) {
@@ -132,6 +130,24 @@ timestamp_t ICUDateFunc::GetTime(icu::Calendar *calendar, uint64_t micros) {
 	return result;
 }
 
+bool ICUDateFunc::TryGetTimeNS(icu::Calendar *calendar, uint64_t nanos, timestamp_ns_t &result) {
+	timestamp_t ts_micros;
+	if (!TryGetTime(calendar, nanos / Interval::NANOS_PER_MICRO, ts_micros)) {
+		return false;
+	}
+
+	nanos %= Interval::NANOS_PER_MICRO;
+	return Timestamp::TryFromTimestampNanos(ts_micros, nanos, result);
+}
+
+timestamp_ns_t ICUDateFunc::GetTimeNS(icu::Calendar *calendar, uint64_t nanos) {
+	timestamp_ns_t result;
+	if (!TryGetTimeNS(calendar, nanos, result)) {
+		throw ConversionException("ICU date overflows timestamp_ns range");
+	}
+	return result;
+}
+
 uint64_t ICUDateFunc::SetTime(icu::Calendar *calendar, timestamp_t date) {
 	int64_t millis = date.value / Interval::MICROS_PER_MSEC;
 	int64_t micros = date.value % Interval::MICROS_PER_MSEC;
@@ -147,6 +163,23 @@ uint64_t ICUDateFunc::SetTime(icu::Calendar *calendar, timestamp_t date) {
 		throw InternalException("Unable to set ICU calendar time.");
 	}
 	return uint64_t(micros);
+}
+
+uint64_t ICUDateFunc::SetTimeNS(icu::Calendar *calendar, timestamp_ns_t date) {
+	int64_t millis = date.value / Interval::NANOS_PER_MSEC;
+	int64_t nanos = date.value % Interval::NANOS_PER_MSEC;
+	if (nanos < 0) {
+		--millis;
+		nanos += Interval::MICROS_PER_MSEC;
+	}
+
+	const auto udate = UDate(millis);
+	UErrorCode status = U_ZERO_ERROR;
+	calendar->setTime(udate, status);
+	if (U_FAILURE(status)) {
+		throw InternalException("Unable to set ICU calendar time.");
+	}
+	return uint64_t(nanos);
 }
 
 int32_t ICUDateFunc::ExtractField(icu::Calendar *calendar, UCalendarDateFields field) {

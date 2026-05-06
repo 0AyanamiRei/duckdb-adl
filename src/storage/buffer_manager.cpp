@@ -1,15 +1,15 @@
 #include "duckdb/storage/buffer_manager.hpp"
 
-#include "duckdb/common/allocator.hpp"
 #include "duckdb/common/exception.hpp"
-#include "duckdb/common/file_buffer.hpp"
 #include "duckdb/main/attached_database.hpp"
 #include "duckdb/main/client_data.hpp"
 #include "duckdb/main/database.hpp"
-#include "duckdb/storage/buffer/buffer_pool.hpp"
-#include "duckdb/storage/standard_buffer_manager.hpp"
+#include "duckdb/main/client_context.hpp"
 
 namespace duckdb {
+
+// Forward declaration.
+class BlockManager;
 
 // Static functions.
 
@@ -114,12 +114,12 @@ void BufferManager::WriteTemporaryBuffer(MemoryTag tag, block_id_t block_id, Fil
 	throw NotImplementedException("This type of BufferManager does not support 'WriteTemporaryBuffer");
 }
 
-unique_ptr<FileBuffer> BufferManager::ReadTemporaryBuffer(MemoryTag tag, BlockHandle &block,
+unique_ptr<FileBuffer> BufferManager::ReadTemporaryBuffer(QueryContext context, MemoryTag tag, BlockHandle &block,
                                                           unique_ptr<FileBuffer> buffer) {
 	throw NotImplementedException("This type of BufferManager does not support 'ReadTemporaryBuffer");
 }
 
-void BufferManager::DeleteTemporaryFile(BlockHandle &block) {
+void BufferManager::DeleteTemporaryFile(BlockMemory &memory) {
 	throw NotImplementedException("This type of BufferManager does not support 'DeleteTemporaryFile");
 }
 

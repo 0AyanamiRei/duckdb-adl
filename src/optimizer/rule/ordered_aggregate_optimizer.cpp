@@ -17,12 +17,14 @@ OrderedAggregateOptimizer::OrderedAggregateOptimizer(ExpressionRewriter &rewrite
 }
 
 unique_ptr<Expression> OrderedAggregateOptimizer::Apply(ClientContext &context, BoundAggregateExpression &aggr,
-                                                        vector<unique_ptr<Expression>> &groups, bool &changes_made) {
+                                                        vector<unique_ptr<Expression>> &groups,
+                                                        optional_ptr<vector<GroupingSet>> grouping_sets,
+                                                        bool &changes_made) {
 	if (!aggr.order_bys) {
 		// no ORDER BYs defined
 		return nullptr;
 	}
-	if (aggr.function.order_dependent == AggregateOrderDependent::NOT_ORDER_DEPENDENT) {
+	if (aggr.function.GetOrderDependent() == AggregateOrderDependent::NOT_ORDER_DEPENDENT) {
 		// not an order dependent aggregate but we have an ORDER BY clause - remove it
 		aggr.order_bys.reset();
 		changes_made = true;
@@ -30,14 +32,14 @@ unique_ptr<Expression> OrderedAggregateOptimizer::Apply(ClientContext &context, 
 	}
 
 	// Remove unnecessary ORDER BY clauses and return if nothing remains
-	if (aggr.order_bys->Simplify(groups)) {
+	if (aggr.order_bys->Simplify(groups, grouping_sets)) {
 		aggr.order_bys.reset();
 		changes_made = true;
 		return nullptr;
 	}
 
 	//	Rewrite first/last/arbitrary/any_value to use arg_xxx[_null] and create_sort_key
-	const auto &aggr_name = aggr.function.name;
+	const auto &aggr_name = aggr.function.GetName();
 	string arg_xxx_name;
 	if (aggr_name == "last") {
 		arg_xxx_name = "arg_max_null";
@@ -75,14 +77,14 @@ unique_ptr<Expression> OrderedAggregateOptimizer::Apply(ClientContext &context, 
 	// bind the aggregate
 	vector<LogicalType> types;
 	for (const auto &child : children) {
-		types.emplace_back(child->return_type);
+		types.emplace_back(child->GetReturnType());
 	}
 	auto best_function = binder.BindFunction(func.name, func.functions, types, error);
 	if (!best_function.IsValid()) {
 		error.Throw();
 	}
 	// found a matching function!
-	auto bound_function = func.functions.GetFunctionByOffset(best_function.GetIndex());
+	const auto &bound_function = func.functions.GetFunctionByOffset(best_function.GetIndex());
 	return binder.BindAggregateFunction(bound_function, std::move(children), std::move(aggr.filter),
 	                                    aggr.IsDistinct() ? AggregateType::DISTINCT : AggregateType::NON_DISTINCT);
 }
@@ -90,7 +92,14 @@ unique_ptr<Expression> OrderedAggregateOptimizer::Apply(ClientContext &context, 
 unique_ptr<Expression> OrderedAggregateOptimizer::Apply(LogicalOperator &op, vector<reference<Expression>> &bindings,
                                                         bool &changes_made, bool is_root) {
 	auto &aggr = bindings[0].get().Cast<BoundAggregateExpression>();
-	return Apply(rewriter.context, aggr, op.Cast<LogicalAggregate>().groups, changes_made);
+
+	// only apply to LogicalAggregate nodes
+	if (op.type != LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY) {
+		return nullptr;
+	}
+
+	return Apply(rewriter.context, aggr, op.Cast<LogicalAggregate>().groups, op.Cast<LogicalAggregate>().grouping_sets,
+	             changes_made);
 }
 
 } // namespace duckdb

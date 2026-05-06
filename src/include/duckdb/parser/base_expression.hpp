@@ -8,7 +8,6 @@
 
 #pragma once
 
-#include "duckdb/common/common.hpp"
 #include "duckdb/common/enums/expression_type.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/optional_idx.hpp"
@@ -52,6 +51,11 @@ public:
 		query_location = location;
 	}
 
+	//! Returns true if the expression has a valid query location
+	bool HasQueryLocation() const {
+		return query_location.IsValid();
+	}
+
 	//! Returns true if the expression has a non-empty alias
 	bool HasAlias() const {
 		return !alias.empty();
@@ -77,9 +81,7 @@ public:
 		alias.clear();
 	}
 
-	// TODO: Make the following protected
-	// protected:
-
+protected:
 	//! Type of the expression
 	ExpressionType type;
 

@@ -1,5 +1,6 @@
 #include "duckdb/parser/qualified_name.hpp"
 #include "duckdb/parser/parsed_data/parse_info.hpp"
+#include "duckdb/common/exception/parser_exception.hpp"
 
 namespace duckdb {
 
@@ -115,15 +116,15 @@ QualifiedColumnName QualifiedColumnName::Parse(string &input) {
 string QualifiedColumnName::ToString() const {
 	string result;
 	if (!catalog.empty()) {
-		result += KeywordHelper::WriteOptionallyQuoted(catalog) + ".";
+		result += SQLIdentifier(catalog) + ".";
 	}
 	if (!schema.empty()) {
-		result += KeywordHelper::WriteOptionallyQuoted(schema) + ".";
+		result += SQLIdentifier(schema) + ".";
 	}
 	if (!table.empty()) {
-		result += KeywordHelper::WriteOptionallyQuoted(table) + ".";
+		result += SQLIdentifier(table) + ".";
 	}
-	result += KeywordHelper::WriteOptionallyQuoted(column);
+	result += SQLIdentifier(column);
 	return result;
 }
 

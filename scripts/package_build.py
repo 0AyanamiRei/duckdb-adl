@@ -4,8 +4,9 @@ import shutil
 import subprocess
 from python_helpers import open_utf8
 import re
+import tempfile
 
-excluded_objects = ['utf8proc_data.cpp']
+excluded_objects = ['utf8proc_data.cpp', 'dummy_static_extension_loader.cpp']
 
 
 def third_party_includes():
@@ -19,8 +20,6 @@ def third_party_includes():
     includes += [os.path.join('third_party', 'hyperloglog')]
     includes += [os.path.join('third_party', 'jaro_winkler')]
     includes += [os.path.join('third_party', 'jaro_winkler', 'details')]
-    includes += [os.path.join('third_party', 'libpg_query')]
-    includes += [os.path.join('third_party', 'libpg_query', 'include')]
     includes += [os.path.join('third_party', 'lz4')]
     includes += [os.path.join('third_party', 'brotli', 'include')]
     includes += [os.path.join('third_party', 'brotli', 'common')]
@@ -53,7 +52,6 @@ def third_party_sources():
     sources += [os.path.join('third_party', 'skiplist')]
     sources += [os.path.join('third_party', 'fastpforlib')]
     sources += [os.path.join('third_party', 'utf8proc')]
-    sources += [os.path.join('third_party', 'libpg_query')]
     sources += [os.path.join('third_party', 'mbedtls')]
     sources += [os.path.join('third_party', 'yyjson')]
     sources += [os.path.join('third_party', 'zstd')]
@@ -144,9 +142,7 @@ def get_relative_path(source_dir, target_file):
 # MAIN_BRANCH_VERSIONING default should be 'False' for release branches
 # MAIN_BRANCH_VERSIONING default value needs to keep in sync between:
 # - CMakeLists.txt
-# - scripts/amalgamation.py
 # - scripts/package_build.py
-# - tools/pythonpkg/setup.py
 ######
 MAIN_BRANCH_VERSIONING = True
 if os.getenv('MAIN_BRANCH_VERSIONING') == "0":
@@ -279,9 +275,45 @@ def build_package(target_dir, extensions, linenumbers=False, unity_count=32, fol
     # include the main extension helper
     include_files += [os.path.join('src', 'include', 'duckdb', 'main', 'extension_helper.hpp')]
     # include the separate extensions
+    ext_loader_body = ''
+    ext_headers = ''
     for ext in extensions:
         ext_path = os.path.join(scripts_dir, '..', 'extension', ext)
         include_package(ext, ext_path, include_files, include_list, source_list)
+
+        ext_headers += f'#include "{ext}_extension.hpp"\n'
+
+        # handle generated_extension_loader
+        # this - beautifully - approximates code in extension/CMakeLists.txt
+        ext_name_camelcase = ext.replace('_', ' ').title().replace(' ', '')
+
+        ext_loader_body += """
+    if (extension=="${EXT_NAME}") {
+        db.LoadStaticExtension<${EXT_NAME_CAMELCASE}Extension>();
+        return ExtensionLoadResult::LOADED_EXTENSION;
+    }
+        """.replace(
+            '${EXT_NAME}', ext
+        ).replace(
+            '${EXT_NAME_CAMELCASE}', ext_name_camelcase
+        )
+
+    loader_code = open(os.path.join('extension', 'generated_extension_loader.cpp.in'), 'rb').read().decode('utf8')
+    loader_code = (
+        loader_code.replace('${EXT_LOADER_BODY}', ext_loader_body)
+        .replace('${EXT_NAME_VECTOR_INITIALIZER}', ', '.join([f'"{x}"' for x in extensions]))
+        .replace('${EXT_TEST_PATH_INITIALIZER}', '')
+        .replace('CMake', 'package_build.py')
+    )
+
+    loader_code = ext_headers + loader_code
+
+    loader_name = 'generated_extension_loader_package_build.cpp'
+    f = open(loader_name, 'wb')
+    f.write(loader_code.encode('utf8'))
+    f.close()
+
+    source_list += [loader_name]
 
     for src in source_list:
         copy_file(src, target_dir)
@@ -376,23 +408,26 @@ def build_package(target_dir, extensions, linenumbers=False, unity_count=32, fol
         for dirname in files_per_directory.keys():
             current_files = files_per_directory[dirname]
             cmake_file = os.path.join(dirname, 'CMakeLists.txt')
-            unity_build = False
-            if os.path.isfile(cmake_file):
+            unity_files = []
+            if os.path.isfile(cmake_file) and len(current_files) > 1:
                 with open(cmake_file, 'r') as f:
                     text = f.read()
-                    if 'add_library_unity' in text:
-                        unity_build = True
-                        # re-order the files in the unity build so that they follow the same order as the CMake
-                        scores = {}
-                        filenames = [x[0] for x in re.findall('([a-zA-Z0-9_]+[.](cpp|cc|c|cxx))', text)]
-                        score = 0
-                        for filename in filenames:
-                            scores[filename] = score
-                            score += 1
-                        current_files.sort(
-                            key=lambda x: scores[os.path.basename(x)] if os.path.basename(x) in scores else 99999
-                        )
-            if not unity_build:
+                    # Find the unity files in groups
+                    pos = 0
+                    end = len(text)
+                    while pos < end:
+                        lib = text.find('add_library_unity', pos)
+                        if lib == -1:
+                            break
+                        pos = text.find(')', lib)
+                        if pos == -1:
+                            break
+                        filenames = [x[0] for x in re.findall('([a-zA-Z0-9_]+[.](cpp|cc|c|cxx))', text[lib:pos])]
+                        # Remove the unity files from the CMake list
+                        unity_set = set(filenames)
+                        unity_files += [x for x in current_files if os.path.basename(x) in unity_set]
+                        current_files = [x for x in current_files if os.path.basename(x) not in unity_set]
+            if current_files:
                 if short_paths:
                     # replace source files with "__"
                     for file in current_files:
@@ -401,10 +436,10 @@ def build_package(target_dir, extensions, linenumbers=False, unity_count=32, fol
                 else:
                     # directly use the source files
                     new_source_files += [os.path.join(folder_name, file) for file in current_files]
-            else:
+            if unity_files:
                 unity_base = dirname.replace(os.path.sep, '_')
                 unity_name = f'ub_{unity_base}.cpp'
-                new_source_files.append(generate_unity_build(current_files, unity_name, linenumbers))
+                new_source_files.append(generate_unity_build(unity_files, unity_name, linenumbers))
         return new_source_files
 
     original_sources = source_list

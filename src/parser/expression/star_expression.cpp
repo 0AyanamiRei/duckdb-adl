@@ -4,7 +4,6 @@
 #include "duckdb/common/exception.hpp"
 
 #include "duckdb/common/serializer/serializer.hpp"
-#include "duckdb/common/serializer/deserializer.hpp"
 
 namespace duckdb {
 
@@ -44,7 +43,7 @@ string StarExpression::ToString() const {
 			}
 			result += entry.second->ToString();
 			result += " AS ";
-			result += KeywordHelper::WriteOptionallyQuoted(entry.first);
+			result += SQLIdentifier(entry.first);
 			first_entry = false;
 		}
 		result += ")";
@@ -58,7 +57,7 @@ string StarExpression::ToString() const {
 			}
 			result += entry.first.ToString();
 			result += " AS ";
-			result += KeywordHelper::WriteOptionallyQuoted(entry.second);
+			result += SQLIdentifier(entry.second);
 			first_entry = false;
 		}
 		result += ")";

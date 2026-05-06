@@ -1,3 +1,10 @@
+#include "duckdb/common/vector/array_vector.hpp"
+#include "duckdb/common/vector/constant_vector.hpp"
+#include "duckdb/common/vector/dictionary_vector.hpp"
+#include "duckdb/common/vector/flat_vector.hpp"
+#include "duckdb/common/vector/list_vector.hpp"
+#include "duckdb/common/vector/map_vector.hpp"
+#include "duckdb/common/vector/struct_vector.hpp"
 #include "duckdb/common/types/column/column_data_collection.hpp"
 
 #include "duckdb/common/printer.hpp"
@@ -8,6 +15,7 @@
 #include "duckdb/common/types/value_map.hpp"
 #include "duckdb/common/uhugeint.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
+#include "duckdb/main/database.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
 
 namespace duckdb {
@@ -59,9 +67,10 @@ ColumnDataCollection::ColumnDataCollection(Allocator &allocator_p, vector<Logica
 	allocator = make_shared_ptr<ColumnDataAllocator>(allocator_p);
 }
 
-ColumnDataCollection::ColumnDataCollection(BufferManager &buffer_manager, vector<LogicalType> types_p) {
+ColumnDataCollection::ColumnDataCollection(BufferManager &buffer_manager, vector<LogicalType> types_p,
+                                           ColumnDataCollectionLifetime lifetime) {
 	Initialize(std::move(types_p));
-	allocator = make_shared_ptr<ColumnDataAllocator>(buffer_manager);
+	allocator = make_shared_ptr<ColumnDataAllocator>(buffer_manager, lifetime);
 }
 
 ColumnDataCollection::ColumnDataCollection(shared_ptr<ColumnDataAllocator> allocator_p, vector<LogicalType> types_p) {
@@ -70,8 +79,8 @@ ColumnDataCollection::ColumnDataCollection(shared_ptr<ColumnDataAllocator> alloc
 }
 
 ColumnDataCollection::ColumnDataCollection(ClientContext &context, vector<LogicalType> types_p,
-                                           ColumnDataAllocatorType type)
-    : ColumnDataCollection(make_shared_ptr<ColumnDataAllocator>(context, type), std::move(types_p)) {
+                                           ColumnDataAllocatorType type, ColumnDataCollectionLifetime lifetime)
+    : ColumnDataCollection(make_shared_ptr<ColumnDataAllocator>(context, type, lifetime), std::move(types_p)) {
 	D_ASSERT(!types.empty());
 }
 
@@ -146,16 +155,22 @@ idx_t ColumnDataRow::RowIndex() const {
 //===--------------------------------------------------------------------===//
 // ColumnDataRowCollection
 //===--------------------------------------------------------------------===//
-ColumnDataRowCollection::ColumnDataRowCollection(const ColumnDataCollection &collection) {
+ColumnDataRowCollection::ColumnDataRowCollection(const ColumnDataCollection &collection,
+                                                 const ColumnDataScanProperties properties) {
 	if (collection.Count() == 0) {
 		return;
 	}
 	// read all the chunks
 	ColumnDataScanState temp_scan_state;
-	collection.InitializeScan(temp_scan_state, ColumnDataScanProperties::DISALLOW_ZERO_COPY);
+	collection.InitializeScan(temp_scan_state, properties);
 	while (true) {
 		auto chunk = make_uniq<DataChunk>();
-		collection.InitializeScanChunk(*chunk);
+		// Use default allocator so the chunk is independently usable even after the DB allocator is destroyed
+		if (properties == ColumnDataScanProperties::DISALLOW_ZERO_COPY) {
+			collection.InitializeScanChunk(Allocator::DefaultAllocator(), *chunk);
+		} else {
+			collection.InitializeScanChunk(*chunk);
+		}
 		if (!collection.Scan(temp_scan_state, *chunk)) {
 			break;
 		}
@@ -205,14 +220,23 @@ ColumnDataChunkIterationHelper::ColumnDataChunkIterationHelper(const ColumnDataC
 }
 
 ColumnDataChunkIterationHelper::ColumnDataChunkIterator::ColumnDataChunkIterator(
-    const ColumnDataCollection *collection_p, vector<column_t> column_ids_p)
-    : collection(collection_p), scan_chunk(make_shared_ptr<DataChunk>()), row_index(0) {
+    optional_ptr<const ColumnDataCollection> collection_p, vector<column_t> column_ids_p)
+    : collection(collection_p), scan_chunk(make_uniq<DataChunk>()), row_index(0) {
 	if (!collection) {
 		return;
 	}
 	collection->InitializeScan(scan_state, std::move(column_ids_p));
 	collection->InitializeScanChunk(scan_state, *scan_chunk);
 	collection->Scan(scan_state, *scan_chunk);
+}
+
+ColumnDataChunkIterationHelper::ColumnDataChunkIterator::ColumnDataChunkIterator(
+    ColumnDataChunkIterator &&other) noexcept
+    : row_index(0) {
+	std::swap(collection, other.collection);
+	std::swap(scan_state, other.scan_state);
+	std::swap(scan_chunk, other.scan_chunk);
+	std::swap(row_index, other.row_index);
 }
 
 void ColumnDataChunkIterationHelper::ColumnDataChunkIterator::Next() {
@@ -252,12 +276,13 @@ ColumnDataRowIterationHelper::ColumnDataRowIterationHelper(const ColumnDataColle
     : collection(collection_p) {
 }
 
-ColumnDataRowIterationHelper::ColumnDataRowIterator::ColumnDataRowIterator(const ColumnDataCollection *collection_p)
+ColumnDataRowIterationHelper::ColumnDataRowIterator::ColumnDataRowIterator(const ColumnDataCollection *collection_p,
+                                                                           ColumnDataScanProperties properties)
     : collection(collection_p), scan_chunk(make_shared_ptr<DataChunk>()), current_row(*scan_chunk, 0, 0) {
 	if (!collection) {
 		return;
 	}
-	collection->InitializeScan(scan_state);
+	collection->InitializeScan(scan_state, properties);
 	collection->InitializeScanChunk(*scan_chunk);
 	collection->Scan(scan_state, *scan_chunk);
 }
@@ -326,7 +351,7 @@ void ColumnDataCopyValidity(const UnifiedVectorFormat &source_data, validity_t *
 		validity.SetAllValid(STANDARD_VECTOR_SIZE);
 	}
 	// FIXME: we can do something more optimized here using bitshifts & bitwise ors
-	if (!source_data.validity.AllValid()) {
+	if (source_data.validity.CanHaveNull()) {
 		for (idx_t i = 0; i < copy_count; i++) {
 			auto idx = source_data.sel->get_index(source_offset + i);
 			if (!source_data.validity.RowIsValid(idx)) {
@@ -343,10 +368,10 @@ struct BaseValueCopy {
 	}
 
 	template <class OP>
-	static void Assign(ColumnDataMetaData &meta_data, data_ptr_t target, data_ptr_t source, idx_t target_idx,
+	static void Assign(ColumnDataMetaData &meta_data, data_ptr_t target, const_data_ptr_t source, idx_t target_idx,
 	                   idx_t source_idx) {
 		auto result_data = (T *)target;
-		auto source_data = (T *)source;
+		auto source_data = (const T *)source;
 		result_data[target_idx] = OP::Operation(meta_data, source_data[source_idx]);
 	}
 };
@@ -360,7 +385,7 @@ struct StandardValueCopy : public BaseValueCopy<T> {
 
 struct StringValueCopy : public BaseValueCopy<string_t> {
 	static string_t Operation(ColumnDataMetaData &meta_data, string_t input) {
-		return input.IsInlined() ? input : meta_data.segment.heap->AddBlob(input);
+		return meta_data.segment.heap->AddBlob(input);
 	}
 };
 
@@ -389,7 +414,7 @@ struct StructValueCopy {
 	}
 
 	template <class OP>
-	static void Assign(ColumnDataMetaData &meta_data, data_ptr_t target, data_ptr_t source, idx_t target_idx,
+	static void Assign(ColumnDataMetaData &meta_data, data_ptr_t target, const_data_ptr_t source, idx_t target_idx,
 	                   idx_t source_idx) {
 	}
 };
@@ -417,7 +442,7 @@ static void TemplatedColumnDataCopy(ColumnDataMetaData &meta_data, const Unified
 			// initialize the validity mask to set all to valid
 			result_validity.SetAllValid(STANDARD_VECTOR_SIZE);
 		}
-		if (source_data.validity.AllValid()) {
+		if (source_data.validity.CannotHaveNull()) {
 			// Fast path: all valid
 			for (idx_t i = 0; i < append_count; i++) {
 				auto source_idx = source_data.sel->get_index(offset + i);
@@ -480,7 +505,7 @@ bool ColumnDataCopyCompressedStrings(ColumnDataMetaData &meta_data, const Vector
 
 		// Compute total size needed for dictionary strings
 		const auto dictionary_size_idx = dictionary_size.GetIndex();
-		if (dictionary_validity.AllValid()) {
+		if (dictionary_validity.CannotHaveNull()) {
 			for (idx_t i = 0; i < dictionary_size_idx; i++) {
 				const auto &dictionary_string = dictionary_strings[i];
 				heap_size += !dictionary_string.IsInlined() * dictionary_string.GetSize();
@@ -593,7 +618,6 @@ bool ColumnDataCopyCompressedStrings(ColumnDataMetaData &meta_data, const Vector
 template <>
 void ColumnDataCopy<string_t>(ColumnDataMetaData &meta_data, const UnifiedVectorFormat &source_data, Vector &source,
                               idx_t offset, idx_t copy_count) {
-
 	const auto &allocator_type = meta_data.segment.allocator->GetType();
 	if (allocator_type == ColumnDataAllocatorType::IN_MEMORY_ALLOCATOR ||
 	    allocator_type == ColumnDataAllocatorType::HYBRID) {
@@ -733,10 +757,9 @@ void ColumnDataCopy<string_t>(ColumnDataMetaData &meta_data, const UnifiedVector
 template <>
 void ColumnDataCopy<list_entry_t>(ColumnDataMetaData &meta_data, const UnifiedVectorFormat &source_data, Vector &source,
                                   idx_t offset, idx_t copy_count) {
-
 	auto &segment = meta_data.segment;
 
-	auto &child_vector = ListVector::GetEntry(source);
+	auto &child_vector = ListVector::GetChildMutable(source);
 	auto &child_type = child_vector.GetType();
 
 	if (!meta_data.GetVectorMetaData().child_index.IsValid()) {
@@ -805,21 +828,20 @@ void ColumnDataCopyStruct(ColumnDataMetaData &meta_data, const UnifiedVectorForm
 		ColumnDataMetaData child_meta_data(child_function, meta_data, child_index);
 
 		UnifiedVectorFormat child_data;
-		child_vectors[child_idx]->ToUnifiedFormat(copy_count, child_data);
+		child_vectors[child_idx].ToUnifiedFormat(copy_count, child_data);
 
-		child_function.function(child_meta_data, child_data, *child_vectors[child_idx], offset, copy_count);
+		child_function.function(child_meta_data, child_data, child_vectors[child_idx], offset, copy_count);
 	}
 }
 
 void ColumnDataCopyArray(ColumnDataMetaData &meta_data, const UnifiedVectorFormat &source_data, Vector &source,
                          idx_t offset, idx_t copy_count) {
-
 	auto &segment = meta_data.segment;
 
 	// copy the NULL values for the main array vector (the same as for a struct vector)
 	TemplatedColumnDataCopy<StructValueCopy>(meta_data, source_data, source, offset, copy_count);
 
-	auto &child_vector = ArrayVector::GetEntry(source);
+	auto &child_vector = ArrayVector::GetChildMutable(source);
 	auto &child_type = child_vector.GetType();
 	auto array_size = ArrayType::GetSize(source.GetType());
 
@@ -842,7 +864,8 @@ void ColumnDataCopyArray(ColumnDataMetaData &meta_data, const UnifiedVectorForma
 	child_vector.ToUnifiedFormat(copy_count * array_size, child_vector_data);
 
 	// Broadcast and sync the validity of the array vector to the child vector
-
+	// This requires creating a copy of the validity mask: we cannot modify the input validity
+	child_vector_data.validity = ValidityMask(child_vector_data.validity, child_vector_data.validity.Capacity());
 	if (source_data.validity.IsMaskSet()) {
 		for (idx_t i = 0; i < copy_count; i++) {
 			auto source_idx = source_data.sel->get_index(offset + i);
@@ -1015,6 +1038,7 @@ void ColumnDataCollection::InitializeScan(ColumnDataScanState &state, ColumnData
 
 void ColumnDataCollection::InitializeScan(ColumnDataScanState &state, vector<column_t> column_ids,
                                           ColumnDataScanProperties properties) const {
+	state.db = allocator->GetDatabase();
 	state.chunk_index = 0;
 	state.segment_index = 0;
 	state.current_row_index = 0;
@@ -1036,6 +1060,7 @@ void ColumnDataCollection::InitializeScan(ColumnDataParallelScanState &state, ve
 
 bool ColumnDataCollection::Scan(ColumnDataParallelScanState &state, ColumnDataLocalScanState &lstate,
                                 DataChunk &result) const {
+	D_ASSERT(result.GetTypes() == types);
 	result.Reset();
 
 	idx_t chunk_index;
@@ -1052,7 +1077,11 @@ bool ColumnDataCollection::Scan(ColumnDataParallelScanState &state, ColumnDataLo
 }
 
 void ColumnDataCollection::InitializeScanChunk(DataChunk &chunk) const {
-	chunk.Initialize(allocator->GetAllocator(), types);
+	InitializeScanChunk(allocator->GetAllocator(), chunk);
+}
+
+void ColumnDataCollection::InitializeScanChunk(Allocator &allocator, DataChunk &chunk) const {
+	chunk.Initialize(allocator, types);
 }
 
 void ColumnDataCollection::InitializeScanChunk(ColumnDataScanState &state, DataChunk &chunk) const {
@@ -1125,10 +1154,14 @@ void ColumnDataCollection::ScanAtIndex(ColumnDataParallelScanState &state, Colum
 	lstate.current_chunk_state.properties = state.scan_state.properties;
 	segment.ReadChunk(chunk_index, lstate.current_chunk_state, result, state.scan_state.column_ids);
 	lstate.current_row_index = row_index;
-	result.Verify();
+	result.Verify(state.scan_state.db);
 }
 
 bool ColumnDataCollection::Scan(ColumnDataScanState &state, DataChunk &result) const {
+	for (idx_t i = 0; i < state.column_ids.size(); i++) {
+		D_ASSERT(result.GetTypes()[i] == types[state.column_ids[i]]);
+	}
+
 	result.Reset();
 
 	idx_t chunk_index;
@@ -1142,7 +1175,7 @@ bool ColumnDataCollection::Scan(ColumnDataScanState &state, DataChunk &result) c
 	auto &segment = *segments[segment_index];
 	state.current_chunk_state.properties = state.properties;
 	segment.ReadChunk(chunk_index, state.current_chunk_state, result, state.column_ids);
-	result.Verify();
+	result.Verify(state.db);
 	return true;
 }
 
@@ -1174,7 +1207,7 @@ bool ColumnDataCollection::Seek(idx_t seek_idx, ColumnDataScanState &state, Data
 	auto &segment = *segments[segment_index];
 	state.current_chunk_state.properties = state.properties;
 	segment.ReadChunk(chunk_index, state.current_chunk_state, result, state.column_ids);
-	result.Verify();
+	result.Verify(state.db);
 	return true;
 }
 
@@ -1213,6 +1246,7 @@ idx_t ColumnDataCollection::ChunkCount() const {
 }
 
 void ColumnDataCollection::FetchChunk(idx_t chunk_idx, DataChunk &result) const {
+	D_ASSERT(result.GetTypes() == types);
 	D_ASSERT(chunk_idx < ChunkCount());
 	for (auto &segment : segments) {
 		if (chunk_idx >= segment->ChunkCount()) {
@@ -1284,11 +1318,11 @@ struct ValueResultEquals {
 bool ColumnDataCollection::ResultEquals(const ColumnDataCollection &left, const ColumnDataCollection &right,
                                         string &error_message, bool ordered) {
 	if (left.ColumnCount() != right.ColumnCount()) {
-		error_message = "Column count mismatch";
+		error_message = StringUtil::Format("Column count mismatch (%d vs %d)", left.Count(), right.Count());
 		return false;
 	}
 	if (left.Count() != right.Count()) {
-		error_message = "Row count mismatch";
+		error_message = StringUtil::Format("Row count mismatch (%d vs %d)", left.Count(), right.Count());
 		return false;
 	}
 	auto left_rows = left.GetRows();
@@ -1354,6 +1388,11 @@ ColumnDataAllocatorType ColumnDataCollection::GetAllocatorType() const {
 	return allocator->GetType();
 }
 
+BufferManager &ColumnDataCollection::GetBufferManager() const {
+	D_ASSERT(allocator->GetType() == ColumnDataAllocatorType::BUFFER_MANAGER_ALLOCATOR);
+	return allocator->GetBufferManager();
+}
+
 const vector<unique_ptr<ColumnDataCollectionSegment>> &ColumnDataCollection::GetSegments() const {
 	return segments;
 }
@@ -1385,7 +1424,7 @@ unique_ptr<ColumnDataCollection> ColumnDataCollection::Deserialize(Deserializer 
 
 	for (idx_t r = 0; r < values[0].size(); r++) {
 		for (idx_t c = 0; c < types.size(); c++) {
-			chunk.SetValue(c, chunk.size(), values[c][r]);
+			chunk.data[c].Append(values[c][r]);
 		}
 		chunk.SetCardinality(chunk.size() + 1);
 		if (chunk.size() == STANDARD_VECTOR_SIZE) {

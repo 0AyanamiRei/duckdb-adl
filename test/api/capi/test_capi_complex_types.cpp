@@ -5,7 +5,6 @@
 #include "duckdb/transaction/meta_transaction.hpp"
 
 using namespace duckdb;
-using namespace std;
 
 TEST_CASE("Test decimal types C API", "[capi]") {
 	CAPITester tester;
@@ -278,7 +277,7 @@ TEST_CASE("Logical types with aliases", "[capi]") {
 	auto &catalog_name = DatabaseManager::GetDefaultDatabase(*connection->context);
 	auto &transaction = MetaTransaction::Get(*connection->context);
 	auto &catalog = Catalog::GetCatalog(*connection->context, catalog_name);
-	transaction.ModifyDatabase(catalog.GetAttached());
+	transaction.ModifyDatabase(catalog.GetAttached(), DatabaseModificationType::CREATE_CATALOG_ENTRY);
 	catalog.CreateType(*connection->context, info);
 
 	connection->Commit();
@@ -541,6 +540,15 @@ TEST_CASE("Binding values", "[capi]") {
 	auto struct_value = duckdb_create_struct_value(struct_type, &value);
 	duckdb_destroy_logical_type(&struct_type);
 
+	// Fail with out-of-bounds.
+	duckdb_prepared_statement prepared_fail;
+	REQUIRE(duckdb_prepare(tester.connection, "SELECT ?, ?", &prepared_fail) == DuckDBSuccess);
+	auto state = duckdb_bind_value(prepared_fail, 3, struct_value);
+	REQUIRE(state == DuckDBError);
+	auto error_msg = duckdb_prepare_error(prepared_fail);
+	REQUIRE(StringUtil::Contains(string(error_msg), "Can not bind to parameter number"));
+	duckdb_destroy_prepare(&prepared_fail);
+
 	duckdb::vector<duckdb_value> list_values {value};
 	auto list_value = duckdb_create_list_value(member_type, list_values.data(), member_count);
 
@@ -667,6 +675,26 @@ TEST_CASE("Test Infinite Dates", "[capi]") {
 		ts = result->Fetch<duckdb_timestamp>(2, 0);
 		REQUIRE(!duckdb_is_finite_timestamp(ts));
 		REQUIRE(ts.micros > 0);
+	}
+
+	{
+		auto result =
+		    tester.Query("SELECT '-infinity'::TIMESTAMPTZ_NS, 'epoch'::TIMESTAMPTZ_NS, 'infinity'::TIMESTAMPTZ_NS");
+		REQUIRE(NO_FAIL(*result));
+		REQUIRE(result->ColumnCount() == 3);
+		REQUIRE(result->ErrorMessage() == nullptr);
+
+		auto ts = result->Fetch<duckdb_timestamp_ns>(0, 0);
+		REQUIRE(!duckdb_is_finite_timestamp_ns(ts));
+		REQUIRE(ts.nanos < 0);
+
+		ts = result->Fetch<duckdb_timestamp_ns>(1, 0);
+		REQUIRE(duckdb_is_finite_timestamp_ns(ts));
+		REQUIRE(ts.nanos == 0);
+
+		ts = result->Fetch<duckdb_timestamp_ns>(2, 0);
+		REQUIRE(!duckdb_is_finite_timestamp_ns(ts));
+		REQUIRE(ts.nanos > 0);
 	}
 
 	{

@@ -50,6 +50,14 @@ buffer_ptr<SelectionData> SelectionVector::Slice(const SelectionVector &sel, idx
 	return data;
 }
 
+idx_t SelectionVector::SliceInPlace(const SelectionVector &source, idx_t count) {
+	for (idx_t i = 0; i < count; ++i) {
+		set_index(i, get_index(source.get_index(i)));
+	}
+
+	return count;
+}
+
 void SelectionVector::Verify(idx_t count, idx_t vector_size) const {
 #ifdef DEBUG
 	D_ASSERT(vector_size >= 1);
@@ -63,6 +71,13 @@ void SelectionVector::Verify(idx_t count, idx_t vector_size) const {
 		}
 	}
 #endif
+}
+
+idx_t SelectionVector::GetAllocationSize() const {
+	if (!selection_data) {
+		return 0;
+	}
+	return selection_data->owned_data.GetSize();
 }
 
 } // namespace duckdb

@@ -2,7 +2,7 @@
 #include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/main/client_data.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
-
+#include "duckdb/logging/log_manager.hpp"
 #include "utf8proc.hpp"
 
 namespace duckdb {
@@ -47,17 +47,20 @@ public:
 
 void ThrowIfNotConstant(const Expression &arg) {
 	if (!arg.IsFoldable()) {
-		throw BinderException("write_log: argument '%s' must be constant", arg.alias);
+		throw BinderException("write_log: argument '%s' must be constant", arg.GetAlias());
 	}
 }
 
-unique_ptr<FunctionData> WriteLogBind(ClientContext &context, ScalarFunction &bound_function,
-                                      vector<unique_ptr<Expression>> &arguments) {
+unique_ptr<FunctionData> WriteLogBind(BindScalarFunctionInput &input) {
+	auto &context = input.GetClientContext();
+	auto &bound_function = input.GetBoundFunction();
+	auto &arguments = input.GetArguments();
+
 	if (arguments.empty()) {
 		throw BinderException("write_log takes at least one argument");
 	}
 
-	if (arguments[0]->return_type != LogicalType::VARCHAR) {
+	if (arguments[0]->GetReturnType() != LogicalType::VARCHAR) {
 		throw InvalidTypeException("write_log first argument must be a VARCHAR");
 	}
 
@@ -65,44 +68,44 @@ unique_ptr<FunctionData> WriteLogBind(ClientContext &context, ScalarFunction &bo
 	auto result = make_uniq<WriteLogBindData>();
 
 	// Default return type
-	bound_function.return_type = LogicalType::VARCHAR;
+	bound_function.SetReturnType(LogicalType::VARCHAR);
 
 	for (idx_t i = 1; i < arguments.size(); i++) {
 		auto &arg = arguments[i];
 		if (arg->HasParameter()) {
 			throw ParameterNotResolvedException();
 		}
-		if (arg->alias == "disable_logging") {
+		if (arg->GetAlias() == "disable_logging") {
 			ThrowIfNotConstant(*arg);
-			if (arg->return_type.id() != LogicalTypeId::BOOLEAN) {
+			if (arg->GetReturnType().id() != LogicalTypeId::BOOLEAN) {
 				throw BinderException("write_log: 'disable_logging' argument must be a boolean");
 			}
 			result->disable_logging = BooleanValue::Get(ExpressionExecutor::EvaluateScalar(context, *arg));
-		} else if (arg->alias == "scope") {
+		} else if (arg->GetAlias() == "scope") {
 			ThrowIfNotConstant(*arg);
-			if (arg->return_type.id() != LogicalTypeId::VARCHAR) {
+			if (arg->GetReturnType().id() != LogicalTypeId::VARCHAR) {
 				throw BinderException("write_log: 'scope' argument must be a string");
 			}
 			result->scope = StringValue::Get(ExpressionExecutor::EvaluateScalar(context, *arg));
-		} else if (arg->alias == "level") {
+		} else if (arg->GetAlias() == "level") {
 			ThrowIfNotConstant(*arg);
-			if (arg->return_type.id() != LogicalTypeId::VARCHAR) {
+			if (arg->GetReturnType().id() != LogicalTypeId::VARCHAR) {
 				throw BinderException("write_log: 'level' argument must be a string");
 			}
 			result->level =
 			    EnumUtil::FromString<LogLevel>(StringValue::Get(ExpressionExecutor::EvaluateScalar(context, *arg)));
-		} else if (arg->alias == "log_type") {
+		} else if (arg->GetAlias() == "log_type") {
 			ThrowIfNotConstant(*arg);
-			if (arg->return_type.id() != LogicalTypeId::VARCHAR) {
+			if (arg->GetReturnType().id() != LogicalTypeId::VARCHAR) {
 				throw BinderException("write_log: 'log_type' argument must be a string");
 			}
 			result->type = StringValue::Get(ExpressionExecutor::EvaluateScalar(context, *arg));
-		} else if (arg->alias == "return_value") {
-			result->return_type = arg->return_type;
+		} else if (arg->GetAlias() == "return_value") {
+			result->return_type = arg->GetReturnType();
 			result->output_col = i;
-			bound_function.return_type = result->return_type;
+			bound_function.SetReturnType(result->return_type);
 		} else {
-			throw BinderException(StringUtil::Format("write_log: Unknown argument '%s'", arg->alias));
+			throw BinderException(StringUtil::Format("write_log: Unknown argument '%s'", arg->GetAlias()));
 		}
 	}
 
@@ -114,14 +117,8 @@ unique_ptr<FunctionData> WriteLogBind(ClientContext &context, ScalarFunction &bo
 template <class T>
 void WriteLogValues(T &LogSource, LogLevel level, const string_t *data, const SelectionVector *sel, idx_t size,
                     const string &type) {
-	if (!type.empty()) {
-		for (idx_t i = 0; i < size; i++) {
-			DUCKDB_LOG_INTERNAL(LogSource, type.c_str(), level, data[sel->get_index(i)]);
-		}
-	} else {
-		for (idx_t i = 0; i < size; i++) {
-			DUCKDB_LOG_INTERNAL(LogSource, type.c_str(), level, data[sel->get_index(i)]);
-		}
+	for (idx_t i = 0; i < size; i++) {
+		DUCKDB_LOG_INTERNAL(LogSource, type.c_str(), level, data[sel->get_index(i)]);
 	}
 }
 
@@ -156,7 +153,7 @@ void WriteLogFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	if (info.output_col != DConstants::INVALID_INDEX) {
 		result.Reference(args.data[info.output_col]);
 	} else {
-		result.Reference(Value(LogicalType::VARCHAR));
+		ConstantVector::SetNull(result, count_t(args.size()));
 	}
 }
 
@@ -166,7 +163,7 @@ ScalarFunctionSet WriteLogFun::GetFunctions() {
 	ScalarFunctionSet set("write_log");
 
 	set.AddFunction(ScalarFunction({LogicalType::VARCHAR}, LogicalType::ANY, WriteLogFunction, WriteLogBind, nullptr,
-	                               nullptr, nullptr, LogicalType::ANY, FunctionStability::VOLATILE));
+	                               nullptr, LogicalType::ANY, FunctionStability::VOLATILE));
 
 	return set;
 }

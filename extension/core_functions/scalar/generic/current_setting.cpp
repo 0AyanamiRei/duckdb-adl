@@ -5,6 +5,8 @@
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/catalog/catalog.hpp"
+#include "duckdb/common/exception/parser_exception.hpp"
+
 namespace duckdb {
 
 namespace {
@@ -28,18 +30,19 @@ public:
 void CurrentSettingFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &func_expr = state.expr.Cast<BoundFunctionExpression>();
 	auto &info = func_expr.bind_info->Cast<CurrentSettingBindData>();
-	result.Reference(info.value);
+	result.Reference(info.value, count_t(args.size()));
 }
 
-unique_ptr<FunctionData> CurrentSettingBind(ClientContext &context, ScalarFunction &bound_function,
-                                            vector<unique_ptr<Expression>> &arguments) {
-
+unique_ptr<FunctionData> CurrentSettingBind(BindScalarFunctionInput &input) {
+	auto &context = input.GetClientContext();
+	auto &bound_function = input.GetBoundFunction();
+	auto &arguments = input.GetArguments();
 	auto &key_child = arguments[0];
-	if (key_child->return_type.id() == LogicalTypeId::UNKNOWN) {
+	if (key_child->GetReturnType().id() == LogicalTypeId::UNKNOWN) {
 		throw ParameterNotResolvedException();
 	}
-	if (key_child->return_type.id() != LogicalTypeId::VARCHAR ||
-	    key_child->return_type.id() != LogicalTypeId::VARCHAR || !key_child->IsFoldable()) {
+	if (key_child->GetReturnType().id() != LogicalTypeId::VARCHAR ||
+	    key_child->GetReturnType().id() != LogicalTypeId::VARCHAR || !key_child->IsFoldable()) {
 		throw ParserException("Key name for current_setting needs to be a constant string");
 	}
 	Value key_val = ExpressionExecutor::EvaluateScalar(context, *key_child);
@@ -51,12 +54,12 @@ unique_ptr<FunctionData> CurrentSettingBind(ClientContext &context, ScalarFuncti
 	auto key = StringUtil::Lower(StringValue::Get(key_val));
 	Value val;
 	if (!context.TryGetCurrentSetting(key, val)) {
-		Catalog::AutoloadExtensionByConfigName(context, key);
+		auto extension_name = Catalog::AutoloadExtensionByConfigName(context, key);
 		// If autoloader didn't throw, the config is now available
 		context.TryGetCurrentSetting(key, val);
 	}
 
-	bound_function.return_type = val.type();
+	bound_function.SetReturnType(val.type());
 	return make_uniq<CurrentSettingBindData>(val);
 }
 
@@ -64,7 +67,7 @@ unique_ptr<FunctionData> CurrentSettingBind(ClientContext &context, ScalarFuncti
 
 ScalarFunction CurrentSettingFun::GetFunction() {
 	auto fun = ScalarFunction({LogicalType::VARCHAR}, LogicalType::ANY, CurrentSettingFunction, CurrentSettingBind);
-	fun.null_handling = FunctionNullHandling::SPECIAL_HANDLING;
+	fun.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	return fun;
 }
 

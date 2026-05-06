@@ -70,7 +70,7 @@ public:
 	                      idx_t estimated_cardinality);
 	PhysicalHashAggregate(PhysicalPlan &physical_plan, ClientContext &context, vector<LogicalType> types,
 	                      vector<unique_ptr<Expression>> expressions, vector<unique_ptr<Expression>> groups,
-	                      vector<GroupingSet> grouping_sets, vector<unsafe_vector<idx_t>> grouping_functions,
+	                      vector<GroupingSet> grouping_sets, vector<unsafe_vector<ProjectionIndex>> grouping_functions,
 	                      idx_t estimated_cardinality, TupleDataValidityType group_validity,
 	                      TupleDataValidityType distinct_validity);
 
@@ -95,7 +95,8 @@ public:
 	unique_ptr<GlobalSourceState> GetGlobalSourceState(ClientContext &context) const override;
 	unique_ptr<LocalSourceState> GetLocalSourceState(ExecutionContext &context,
 	                                                 GlobalSourceState &gstate) const override;
-	SourceResultType GetData(ExecutionContext &context, DataChunk &chunk, OperatorSourceInput &input) const override;
+	SourceResultType GetDataInternal(ExecutionContext &context, DataChunk &chunk,
+	                                 OperatorSourceInput &input) const override;
 
 	ProgressData GetProgress(ClientContext &context, GlobalSourceState &gstate) const override;
 

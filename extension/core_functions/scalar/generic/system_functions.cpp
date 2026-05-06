@@ -16,19 +16,19 @@ namespace {
 // current_query
 void CurrentQueryFunction(DataChunk &input, ExpressionState &state, Vector &result) {
 	Value val(state.GetContext().GetCurrentQuery());
-	result.Reference(val);
+	result.Reference(val, count_t(input.size()));
 }
 
 // current_schema
 void CurrentSchemaFunction(DataChunk &input, ExpressionState &state, Vector &result) {
 	Value val(ClientData::Get(state.GetContext()).catalog_search_path->GetDefault().schema);
-	result.Reference(val);
+	result.Reference(val, count_t(input.size()));
 }
 
 // current_database
 void CurrentDatabaseFunction(DataChunk &input, ExpressionState &state, Vector &result) {
 	Value val(DatabaseManager::GetDefaultDatabase(state.GetContext()));
-	result.Reference(val);
+	result.Reference(val, count_t(input.size()));
 }
 
 struct CurrentSchemasBindData : public FunctionData {
@@ -47,9 +47,10 @@ public:
 	}
 };
 
-unique_ptr<FunctionData> CurrentSchemasBind(ClientContext &context, ScalarFunction &bound_function,
-                                            vector<unique_ptr<Expression>> &arguments) {
-	if (arguments[0]->return_type.id() != LogicalTypeId::BOOLEAN) {
+unique_ptr<FunctionData> CurrentSchemasBind(BindScalarFunctionInput &input) {
+	auto &context = input.GetClientContext();
+	auto &arguments = input.GetArguments();
+	if (arguments[0]->GetReturnType().id() != LogicalTypeId::BOOLEAN) {
 		throw BinderException("current_schemas requires a boolean input");
 	}
 	if (!arguments[0]->IsFoldable()) {
@@ -76,7 +77,7 @@ unique_ptr<FunctionData> CurrentSchemasBind(ClientContext &context, ScalarFuncti
 void CurrentSchemasFunction(DataChunk &input, ExpressionState &state, Vector &result) {
 	auto &func_expr = state.expr.Cast<BoundFunctionExpression>();
 	auto &info = func_expr.bind_info->Cast<CurrentSchemasBindData>();
-	result.Reference(info.result);
+	result.Reference(info.result, count_t(input.size()));
 }
 
 // in_search_path
@@ -95,32 +96,32 @@ void TransactionIdCurrent(DataChunk &input, ExpressionState &state, Vector &resu
 	auto &catalog = Catalog::GetCatalog(context, DatabaseManager::GetDefaultDatabase(context));
 	auto &transaction = DuckTransaction::Get(context, catalog);
 	auto val = Value::UBIGINT(transaction.start_time);
-	result.Reference(val);
+	result.Reference(val, count_t(input.size()));
 }
 
 // version
 void VersionFunction(DataChunk &input, ExpressionState &state, Vector &result) {
 	auto val = Value(DuckDB::LibraryVersion());
-	result.Reference(val);
+	result.Reference(val, count_t(input.size()));
 }
 
 } // namespace
 
 ScalarFunction CurrentQueryFun::GetFunction() {
 	ScalarFunction current_query({}, LogicalType::VARCHAR, CurrentQueryFunction);
-	current_query.stability = FunctionStability::VOLATILE;
+	current_query.SetStability(FunctionStability::VOLATILE);
 	return current_query;
 }
 
 ScalarFunction CurrentSchemaFun::GetFunction() {
 	ScalarFunction current_schema({}, LogicalType::VARCHAR, CurrentSchemaFunction);
-	current_schema.stability = FunctionStability::CONSISTENT_WITHIN_QUERY;
+	current_schema.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
 	return current_schema;
 }
 
 ScalarFunction CurrentDatabaseFun::GetFunction() {
 	ScalarFunction current_database({}, LogicalType::VARCHAR, CurrentDatabaseFunction);
-	current_database.stability = FunctionStability::CONSISTENT_WITHIN_QUERY;
+	current_database.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
 	return current_database;
 }
 
@@ -128,20 +129,20 @@ ScalarFunction CurrentSchemasFun::GetFunction() {
 	auto varchar_list_type = LogicalType::LIST(LogicalType::VARCHAR);
 	ScalarFunction current_schemas({LogicalType::BOOLEAN}, varchar_list_type, CurrentSchemasFunction,
 	                               CurrentSchemasBind);
-	current_schemas.stability = FunctionStability::CONSISTENT_WITHIN_QUERY;
+	current_schemas.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
 	return current_schemas;
 }
 
 ScalarFunction InSearchPathFun::GetFunction() {
 	ScalarFunction in_search_path({LogicalType::VARCHAR, LogicalType::VARCHAR}, LogicalType::BOOLEAN,
 	                              InSearchPathFunction);
-	in_search_path.stability = FunctionStability::CONSISTENT_WITHIN_QUERY;
+	in_search_path.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
 	return in_search_path;
 }
 
 ScalarFunction CurrentTransactionIdFun::GetFunction() {
 	ScalarFunction txid_current({}, LogicalType::UBIGINT, TransactionIdCurrent);
-	txid_current.stability = FunctionStability::CONSISTENT_WITHIN_QUERY;
+	txid_current.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
 	return txid_current;
 }
 

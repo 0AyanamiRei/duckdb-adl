@@ -1,7 +1,7 @@
 duckdb_extension_load(excel
-    APPLY_PATCHES
     LOAD_TESTS
     GIT_URL https://github.com/duckdb/duckdb-excel
-    GIT_TAG cf00672f2d16685d9aefcca48c6a04d8c37d7015
+    GIT_TAG 9421a2d75bd7544336caa73e5f9e6063cc7f6992
     INCLUDE_DIR src/excel/include
+    APPLY_PATCHES
     )

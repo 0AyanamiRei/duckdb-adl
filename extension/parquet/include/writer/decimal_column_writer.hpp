@@ -8,14 +8,25 @@
 
 #pragma once
 
+#include <string>
+
 #include "writer/primitive_column_writer.hpp"
+#include "duckdb/common/string.hpp"
+#include "duckdb/common/typedefs.hpp"
+#include "duckdb/common/unique_ptr.hpp"
+#include "duckdb/common/vector.hpp"
+#include "writer/parquet_write_stats.hpp"
 
 namespace duckdb {
+class ColumnWriterPageState;
+class ParquetWriter;
+class Vector;
+class WriteStream;
+struct ParquetColumnSchema;
 
 class FixedDecimalColumnWriter : public PrimitiveColumnWriter {
 public:
-	FixedDecimalColumnWriter(ParquetWriter &writer, const ParquetColumnSchema &column_schema,
-	                         vector<string> schema_path_p, bool can_have_nulls);
+	FixedDecimalColumnWriter(ParquetWriter &writer, ParquetColumnSchema &&column_schema, vector<string> schema_path_p);
 	~FixedDecimalColumnWriter() override = default;
 
 public:

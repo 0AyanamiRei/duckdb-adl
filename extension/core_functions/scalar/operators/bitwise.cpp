@@ -97,13 +97,14 @@ struct BitwiseANDOperator {
 };
 
 void BitwiseANDOperation(DataChunk &args, ExpressionState &state, Vector &result) {
-	BinaryExecutor::Execute<string_t, string_t, string_t>(
-	    args.data[0], args.data[1], result, args.size(), [&](string_t rhs, string_t lhs) {
-		    string_t target = StringVector::EmptyString(result, rhs.GetSize());
+	auto &heap = StringVector::GetStringHeap(result);
+	BinaryExecutor::Execute<string_t, string_t, string_t>(args.data[0], args.data[1], result, args.size(),
+	                                                      [&](string_t rhs, string_t lhs) {
+		                                                      string_t target = heap.EmptyString(rhs.GetSize());
 
-		    Bit::BitwiseAnd(rhs, lhs, target);
-		    return target;
-	    });
+		                                                      Bit::BitwiseAnd(rhs, lhs, target);
+		                                                      return target;
+	                                                      });
 }
 
 } // namespace
@@ -116,7 +117,7 @@ ScalarFunctionSet BitwiseAndFun::GetFunctions() {
 	}
 	functions.AddFunction(ScalarFunction({LogicalType::BIT, LogicalType::BIT}, LogicalType::BIT, BitwiseANDOperation));
 	for (auto &function : functions.functions) {
-		BaseScalarFunction::SetReturnsError(function);
+		function.SetFallible();
 	}
 	return functions;
 }
@@ -134,13 +135,14 @@ struct BitwiseOROperator {
 };
 
 void BitwiseOROperation(DataChunk &args, ExpressionState &state, Vector &result) {
-	BinaryExecutor::Execute<string_t, string_t, string_t>(
-	    args.data[0], args.data[1], result, args.size(), [&](string_t rhs, string_t lhs) {
-		    string_t target = StringVector::EmptyString(result, rhs.GetSize());
+	auto &heap = StringVector::GetStringHeap(result);
+	BinaryExecutor::Execute<string_t, string_t, string_t>(args.data[0], args.data[1], result, args.size(),
+	                                                      [&](string_t rhs, string_t lhs) {
+		                                                      string_t target = heap.EmptyString(rhs.GetSize());
 
-		    Bit::BitwiseOr(rhs, lhs, target);
-		    return target;
-	    });
+		                                                      Bit::BitwiseOr(rhs, lhs, target);
+		                                                      return target;
+	                                                      });
 }
 
 } // namespace
@@ -153,7 +155,7 @@ ScalarFunctionSet BitwiseOrFun::GetFunctions() {
 	}
 	functions.AddFunction(ScalarFunction({LogicalType::BIT, LogicalType::BIT}, LogicalType::BIT, BitwiseOROperation));
 	for (auto &function : functions.functions) {
-		BaseScalarFunction::SetReturnsError(function);
+		function.SetFallible();
 	}
 	return functions;
 }
@@ -171,13 +173,14 @@ struct BitwiseXOROperator {
 };
 
 void BitwiseXOROperation(DataChunk &args, ExpressionState &state, Vector &result) {
-	BinaryExecutor::Execute<string_t, string_t, string_t>(
-	    args.data[0], args.data[1], result, args.size(), [&](string_t rhs, string_t lhs) {
-		    string_t target = StringVector::EmptyString(result, rhs.GetSize());
+	auto &heap = StringVector::GetStringHeap(result);
+	BinaryExecutor::Execute<string_t, string_t, string_t>(args.data[0], args.data[1], result, args.size(),
+	                                                      [&](string_t rhs, string_t lhs) {
+		                                                      string_t target = heap.EmptyString(rhs.GetSize());
 
-		    Bit::BitwiseXor(rhs, lhs, target);
-		    return target;
-	    });
+		                                                      Bit::BitwiseXor(rhs, lhs, target);
+		                                                      return target;
+	                                                      });
 }
 
 } // namespace
@@ -190,7 +193,7 @@ ScalarFunctionSet BitwiseXorFun::GetFunctions() {
 	}
 	functions.AddFunction(ScalarFunction({LogicalType::BIT, LogicalType::BIT}, LogicalType::BIT, BitwiseXOROperation));
 	for (auto &function : functions.functions) {
-		BaseScalarFunction::SetReturnsError(function);
+		function.SetFallible();
 	}
 	return functions;
 }
@@ -208,8 +211,9 @@ struct BitwiseNotOperator {
 };
 
 void BitwiseNOTOperation(DataChunk &args, ExpressionState &state, Vector &result) {
+	auto &heap = StringVector::GetStringHeap(result);
 	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t input) {
-		string_t target = StringVector::EmptyString(result, input.GetSize());
+		string_t target = heap.EmptyString(input.GetSize());
 
 		Bit::BitwiseNot(input, target);
 		return target;
@@ -225,7 +229,7 @@ ScalarFunctionSet BitwiseNotFun::GetFunctions() {
 	}
 	functions.AddFunction(ScalarFunction({LogicalType::BIT}, LogicalType::BIT, BitwiseNOTOperation));
 	for (auto &function : functions.functions) {
-		BaseScalarFunction::SetReturnsError(function);
+		function.SetFallible();
 	}
 	return functions;
 }
@@ -294,7 +298,7 @@ ScalarFunctionSet LeftShiftFun::GetFunctions() {
 	functions.AddFunction(
 	    ScalarFunction({LogicalType::BIT, LogicalType::INTEGER}, LogicalType::BIT, BitwiseShiftLeftOperation));
 	for (auto &function : functions.functions) {
-		BaseScalarFunction::SetReturnsError(function);
+		function.SetFallible();
 	}
 	return functions;
 }
@@ -344,7 +348,7 @@ ScalarFunctionSet RightShiftFun::GetFunctions() {
 	functions.AddFunction(
 	    ScalarFunction({LogicalType::BIT, LogicalType::INTEGER}, LogicalType::BIT, BitwiseShiftRightOperation));
 	for (auto &function : functions.functions) {
-		BaseScalarFunction::SetReturnsError(function);
+		function.SetFallible();
 	}
 	return functions;
 }

@@ -45,12 +45,11 @@ void SetSeedFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 		random_engine.SetSeed(norm_seed);
 	}
 
-	result.SetVectorType(VectorType::CONSTANT_VECTOR);
-	ConstantVector::SetNull(result, true);
+	ConstantVector::SetNull(result, count_t(args.size()));
 }
 
-unique_ptr<FunctionData> SetSeedBind(ClientContext &context, ScalarFunction &bound_function,
-                                     vector<unique_ptr<Expression>> &arguments) {
+unique_ptr<FunctionData> SetSeedBind(BindScalarFunctionInput &input) {
+	auto &context = input.GetClientContext();
 	return make_uniq<SetseedBindData>(context);
 }
 
@@ -58,8 +57,8 @@ unique_ptr<FunctionData> SetSeedBind(ClientContext &context, ScalarFunction &bou
 
 ScalarFunction SetseedFun::GetFunction() {
 	ScalarFunction setseed("setseed", {LogicalType::DOUBLE}, LogicalType::SQLNULL, SetSeedFunction, SetSeedBind);
-	setseed.stability = FunctionStability::VOLATILE;
-	BaseScalarFunction::SetReturnsError(setseed);
+	setseed.SetVolatile();
+	setseed.SetFallible();
 	return setseed;
 }
 

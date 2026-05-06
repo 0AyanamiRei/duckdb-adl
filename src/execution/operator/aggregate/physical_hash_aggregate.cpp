@@ -90,7 +90,7 @@ static vector<LogicalType> CreateGroupChunkTypes(vector<unique_ptr<Expression>> 
 	vector<LogicalType> types(highest_index + 1, LogicalType::SQLNULL);
 	for (auto &group : groups) {
 		auto &bound_ref = group->Cast<BoundReferenceExpression>();
-		types[bound_ref.index] = bound_ref.return_type;
+		types[bound_ref.index] = bound_ref.GetReturnType();
 	}
 	return types;
 }
@@ -129,7 +129,7 @@ PhysicalHashAggregate::PhysicalHashAggregate(PhysicalPlan &physical_plan, Client
                                              vector<LogicalType> types, vector<unique_ptr<Expression>> expressions,
                                              vector<unique_ptr<Expression>> groups_p,
                                              vector<GroupingSet> grouping_sets_p,
-                                             vector<unsafe_vector<idx_t>> grouping_functions_p,
+                                             vector<unsafe_vector<ProjectionIndex>> grouping_functions_p,
                                              idx_t estimated_cardinality, TupleDataValidityType group_validity,
                                              TupleDataValidityType distinct_validity)
     : PhysicalOperator(physical_plan, PhysicalOperatorType::HASH_GROUP_BY, std::move(types), estimated_cardinality),
@@ -139,7 +139,7 @@ PhysicalHashAggregate::PhysicalHashAggregate(PhysicalPlan &physical_plan, Client
 	if (grouping_sets.empty()) {
 		GroupingSet set;
 		for (idx_t i = 0; i < group_count; i++) {
-			set.insert(i);
+			set.insert(ProjectionIndex(i));
 		}
 		grouping_sets.push_back(std::move(set));
 	}
@@ -202,10 +202,10 @@ public:
 		for (auto &aggr : op.grouped_aggregate_data.aggregates) {
 			auto &aggregate = aggr->Cast<BoundAggregateExpression>();
 			for (auto &child : aggregate.children) {
-				payload_types.push_back(child->return_type);
+				payload_types.push_back(child->GetReturnType());
 			}
 			if (aggregate.filter) {
-				filter_types.push_back(aggregate.filter->return_type);
+				filter_types.push_back(aggregate.filter->GetReturnType());
 			}
 		}
 		payload_types.reserve(payload_types.size() + filter_types.size());
@@ -221,7 +221,6 @@ public:
 class HashAggregateLocalSinkState : public LocalSinkState {
 public:
 	HashAggregateLocalSinkState(const PhysicalHashAggregate &op, ExecutionContext &context) {
-
 		auto &payload_types = op.grouped_aggregate_data.payload_types;
 		if (!payload_types.empty()) {
 			aggregate_input_chunk.InitializeEmpty(payload_types);
@@ -393,7 +392,7 @@ SinkResultType PhysicalHashAggregate::Sink(ExecutionContext &context, DataChunk 
 	}
 
 	aggregate_input_chunk.SetCardinality(chunk.size());
-	aggregate_input_chunk.Verify();
+	aggregate_input_chunk.Verify(context.client.db);
 
 	// For every grouping set there is one radix_table
 	for (idx_t i = 0; i < groupings.size(); i++) {
@@ -415,7 +414,6 @@ SinkResultType PhysicalHashAggregate::Sink(ExecutionContext &context, DataChunk 
 // Combine
 //===--------------------------------------------------------------------===//
 void PhysicalHashAggregate::CombineDistinct(ExecutionContext &context, OperatorSinkCombineInput &input) const {
-
 	auto &global_sink = input.global_state.Cast<HashAggregateGlobalSinkState>();
 	auto &sink = input.local_state.Cast<HashAggregateLocalSinkState>();
 
@@ -860,8 +858,8 @@ unique_ptr<LocalSourceState> PhysicalHashAggregate::GetLocalSourceState(Executio
 	return make_uniq<HashAggregateLocalSourceState>(context, *this);
 }
 
-SourceResultType PhysicalHashAggregate::GetData(ExecutionContext &context, DataChunk &chunk,
-                                                OperatorSourceInput &input) const {
+SourceResultType PhysicalHashAggregate::GetDataInternal(ExecutionContext &context, DataChunk &chunk,
+                                                        OperatorSourceInput &input) const {
 	auto &sink_gstate = sink_state->Cast<HashAggregateGlobalSinkState>();
 	auto &gstate = input.global_state.Cast<HashAggregateGlobalSourceState>();
 	auto &lstate = input.local_state.Cast<HashAggregateLocalSourceState>();
@@ -889,7 +887,7 @@ SourceResultType PhysicalHashAggregate::GetData(ExecutionContext &context, DataC
 		}
 
 		// move to the next table
-		auto guard = gstate.Lock();
+		annotated_lock_guard<annotated_mutex> guard(gstate.lock);
 		lstate.radix_idx = lstate.radix_idx.GetIndex() + 1;
 		if (lstate.radix_idx.GetIndex() > gstate.state_index) {
 			// we have not yet worked on the table

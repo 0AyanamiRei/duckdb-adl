@@ -90,6 +90,9 @@ SinkCombineResultType PhysicalVacuum::Combine(ExecutionContext &context, Operato
 SinkFinalizeType PhysicalVacuum::Finalize(Pipeline &pipeline, Event &event, ClientContext &context,
                                           OperatorSinkFinalizeInput &input) const {
 	auto &sink = input.global_state.Cast<VacuumGlobalSinkState>();
+	if (!table->IsDuckTable()) {
+		throw NotImplementedException("Vacuum is only implemented for DuckDB tables");
+	}
 
 	auto tbl = table;
 	for (idx_t col_idx = 0; col_idx < sink.column_distinct_stats.size(); col_idx++) {
@@ -102,8 +105,8 @@ SinkFinalizeType PhysicalVacuum::Finalize(Pipeline &pipeline, Event &event, Clie
 	return SinkFinalizeType::READY;
 }
 
-SourceResultType PhysicalVacuum::GetData(ExecutionContext &context, DataChunk &chunk,
-                                         OperatorSourceInput &input) const {
+SourceResultType PhysicalVacuum::GetDataInternal(ExecutionContext &context, DataChunk &chunk,
+                                                 OperatorSourceInput &input) const {
 	// NOP
 	return SourceResultType::FINISHED;
 }

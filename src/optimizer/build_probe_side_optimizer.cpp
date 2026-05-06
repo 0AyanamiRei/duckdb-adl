@@ -13,6 +13,7 @@
 #include "duckdb/optimizer/optimizer.hpp"
 #include "duckdb/planner/operator/logical_cross_product.hpp"
 #include "duckdb/planner/operator/logical_projection.hpp"
+#include "duckdb/main/settings.hpp"
 
 namespace duckdb {
 
@@ -58,9 +59,15 @@ static void FlipChildren(LogicalOperator &op) {
 	case LogicalOperatorType::LOGICAL_DELIM_JOIN: {
 		auto &join = op.Cast<LogicalComparisonJoin>();
 		join.join_type = InverseJoinType(join.join_type);
-		for (auto &cond : join.conditions) {
-			std::swap(cond.left, cond.right);
-			cond.comparison = FlipComparisonExpression(cond.comparison);
+		for (idx_t i = 0; i < join.conditions.size(); i++) {
+			auto &cond = join.conditions[i];
+			if (cond.IsComparison()) {
+				auto left_expr = cond.RightReference()->Copy();
+				auto right_expr = cond.LeftReference()->Copy();
+				auto flipped_comparison = FlipComparisonExpression(cond.GetComparisonType());
+
+				join.conditions[i] = JoinCondition(std::move(left_expr), std::move(right_expr), flipped_comparison);
+			}
 		}
 		std::swap(join.left_projection_map, join.right_projection_map);
 		return;
@@ -156,7 +163,7 @@ idx_t BuildProbeSideOptimizer::ChildHasJoins(LogicalOperator &op) {
 	return ChildHasJoins(*op.children[0]);
 }
 
-void BuildProbeSideOptimizer::TryFlipJoinChildren(LogicalOperator &op) const {
+bool BuildProbeSideOptimizer::TryFlipJoinChildren(LogicalOperator &op) const {
 	auto &left_child = *op.children[0];
 	auto &right_child = *op.children[1];
 	const auto lhs_cardinality = left_child.has_estimated_cardinality ? left_child.estimated_cardinality
@@ -208,6 +215,7 @@ void BuildProbeSideOptimizer::TryFlipJoinChildren(LogicalOperator &op) const {
 	if (swap) {
 		FlipChildren(op);
 	}
+	return swap;
 }
 
 void BuildProbeSideOptimizer::VisitOperator(LogicalOperator &op) {
@@ -216,8 +224,7 @@ void BuildProbeSideOptimizer::VisitOperator(LogicalOperator &op) {
 	case LogicalOperatorType::LOGICAL_DELIM_JOIN: {
 		auto &join = op.Cast<LogicalComparisonJoin>();
 		if (HasInverseJoinType(join.join_type)) {
-			FlipChildren(join);
-			join.delim_flipped = true;
+			join.delim_flipped = TryFlipJoinChildren(join);
 		}
 		break;
 	}
@@ -229,8 +236,9 @@ void BuildProbeSideOptimizer::VisitOperator(LogicalOperator &op) {
 			// if the conditions have no equality, do not flip the children.
 			// There is no physical join operator (yet) that can do an inequality right_semi/anti join.
 			idx_t has_range = 0;
+			bool prefer_range_joins = Settings::Get<PreferRangeJoinsSetting>(context);
 			if (op.type == LogicalOperatorType::LOGICAL_ANY_JOIN ||
-			    (op.Cast<LogicalComparisonJoin>().HasEquality(has_range) && !context.config.prefer_range_joins)) {
+			    (op.Cast<LogicalComparisonJoin>().HasEquality(has_range) && !prefer_range_joins)) {
 				TryFlipJoinChildren(join);
 			}
 			break;

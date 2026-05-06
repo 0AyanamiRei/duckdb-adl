@@ -13,7 +13,7 @@
 
 namespace duckdb {
 
-class Allocator;
+class BlockAllocator;
 class BlockManager;
 class QueryContext;
 
@@ -30,22 +30,15 @@ public:
 	//! (typically 8 bytes). On return, this->AllocSize() >= this->size >= user_size.
 	//! Our allocation size will always be page-aligned, which is necessary to support
 	//! DIRECT_IO
-	FileBuffer(Allocator &allocator, FileBufferType type, uint64_t user_size, idx_t block_header_size);
-	FileBuffer(Allocator &allocator, FileBufferType type, BlockManager &block_manager);
+	FileBuffer(BlockAllocator &allocator, FileBufferType type, uint64_t user_size, idx_t block_header_size);
+	FileBuffer(BlockAllocator &allocator, FileBufferType type, BlockManager &block_manager);
 	FileBuffer(FileBuffer &source, FileBufferType type, idx_t block_header_size);
 
 	virtual ~FileBuffer();
 
-	Allocator &allocator;
-	//! The buffer that users can write to
-	data_ptr_t buffer;
-	//! The user-facing size of the buffer.
-	//! This is equivalent to internal_size - block_header_size.
-	uint64_t size;
-
 public:
 	//! Read into the FileBuffer from the location.
-	void Read(FileHandle &handle, uint64_t location);
+	void Read(QueryContext context, FileHandle &handle, uint64_t location);
 	//! Write the FileBuffer to the location.
 	void Write(QueryContext context, FileHandle &handle, const uint64_t location);
 
@@ -54,10 +47,16 @@ public:
 	FileBufferType GetBufferType() const {
 		return type;
 	}
+	const_data_ptr_t GetData() const {
+		return buffer;
+	}
+	data_ptr_t GetDataMutable() {
+		return buffer;
+	}
 
 	// Same rules as the constructor. We add room for a header, in addition to
 	// the requested user bytes. We then sector-align the result.
-	void Resize(uint64_t user_size, BlockManager &block_manager);
+	void Resize(uint64_t user_size, idx_t block_header_size);
 	void Resize(BlockManager &block_manager);
 
 	idx_t GetHeaderSize() const {
@@ -83,6 +82,12 @@ public:
 	void Initialize(DebugInitialize info);
 
 protected:
+	BlockAllocator &allocator;
+	//! The buffer that users can write to
+	data_ptr_t buffer;
+	//! The user-facing size of the buffer.
+	//! This is equivalent to internal_size - block_header_size.
+	uint64_t size;
 	//! The type of the buffer.
 	FileBufferType type;
 	//! The pointer to the internal buffer that will be read from or written to.

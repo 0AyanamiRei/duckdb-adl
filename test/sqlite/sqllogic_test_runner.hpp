@@ -23,12 +23,12 @@ enum class RequireResult { PRESENT, MISSING };
 
 struct CachedLabelData {
 public:
-	CachedLabelData(const string &hash, unique_ptr<QueryResult> result) : hash(hash), result(std::move(result)) {
+	CachedLabelData(const string &hash, string result_str_p) : hash(hash), result_str(std::move(result_str_p)) {
 	}
 
 public:
 	string hash;
-	unique_ptr<QueryResult> result;
+	string result_str;
 };
 
 struct HashLabelMap {
@@ -45,7 +45,7 @@ public:
 
 class SQLLogicTestRunner {
 public:
-	SQLLogicTestRunner(string dbpath);
+	explicit SQLLogicTestRunner(string dbpath);
 	~SQLLogicTestRunner();
 
 	string file_name;
@@ -65,7 +65,6 @@ public:
 	duckdb::unique_ptr<Command> top_level_loop;
 	bool original_sqlite_test = false;
 	bool output_sql = false;
-	bool enable_verification = false;
 	bool skip_reload = false;
 	unordered_map<string, string> environment_variables;
 	string local_extension_repo;

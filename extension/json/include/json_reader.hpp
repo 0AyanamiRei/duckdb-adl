@@ -46,7 +46,7 @@ public:
 
 struct JSONFileHandle {
 public:
-	JSONFileHandle(unique_ptr<FileHandle> file_handle, Allocator &allocator);
+	JSONFileHandle(QueryContext context, unique_ptr<FileHandle> file_handle, Allocator &allocator);
 
 	bool IsOpen() const;
 	void Close();
@@ -74,6 +74,8 @@ private:
 	idx_t ReadFromCache(char *&pointer, idx_t &size, atomic<idx_t> &position);
 
 private:
+	QueryContext context;
+
 	//! The JSON file handle
 	unique_ptr<FileHandle> file_handle;
 	Allocator &allocator;
@@ -208,8 +210,8 @@ public:
 	void PrepareReader(ClientContext &context, GlobalTableFunctionState &) override;
 	bool TryInitializeScan(ClientContext &context, GlobalTableFunctionState &gstate,
 	                       LocalTableFunctionState &lstate) override;
-	void Scan(ClientContext &context, GlobalTableFunctionState &global_state, LocalTableFunctionState &local_state,
-	          DataChunk &chunk) override;
+	AsyncResult Scan(ClientContext &context, GlobalTableFunctionState &global_state,
+	                 LocalTableFunctionState &local_state, DataChunk &chunk) override;
 	void FinishFile(ClientContext &context, GlobalTableFunctionState &gstate_p) override;
 	double GetProgressInFile(ClientContext &context) override;
 
@@ -228,9 +230,9 @@ public:
 
 	void Initialize(Allocator &allocator, idx_t buffer_size);
 	bool InitializeScan(JSONReaderScanState &state, JSONFileReadType file_read_type);
-	void ParseJSON(JSONReaderScanState &scan_state, char *const json_start, const idx_t json_size,
+	bool ParseJSON(JSONReaderScanState &scan_state, char *const json_start, const idx_t json_size,
 	               const idx_t remaining);
-	void ParseNextChunk(JSONReaderScanState &scan_state);
+	bool ParseNextChunk(JSONReaderScanState &scan_state);
 	idx_t Scan(JSONReaderScanState &scan_state);
 	bool ReadNextBuffer(JSONReaderScanState &scan_state);
 	bool PrepareBufferForRead(JSONReaderScanState &scan_state);

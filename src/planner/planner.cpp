@@ -9,13 +9,16 @@
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/prepared_statement_data.hpp"
 #include "duckdb/main/query_profiler.hpp"
+#include "duckdb/main/settings.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/expression/bound_parameter_expression.hpp"
 #include "duckdb/transaction/meta_transaction.hpp"
 #include "duckdb/execution/column_binding_resolver.hpp"
 #include "duckdb/main/attached_database.hpp"
-
+#include "duckdb/parser/statement/multi_statement.hpp"
 #include "duckdb/planner/subquery/flatten_dependent_join.hpp"
+#include "duckdb/planner/operator_extension.hpp"
+#include "duckdb/planner/planner_extension.hpp"
 
 namespace duckdb {
 
@@ -31,6 +34,15 @@ static void CheckTreeDepth(const LogicalOperator &op, idx_t max_depth, idx_t dep
 	}
 }
 
+static void RunPostBindExtensions(ClientContext &context, Binder &binder, BoundStatement &statement) {
+	for (auto &planner_extension : PlannerExtension::Iterate(context)) {
+		if (planner_extension.post_bind_function) {
+			PlannerExtensionInput input {context, binder, planner_extension.planner_info.get()};
+			planner_extension.post_bind_function(input, statement);
+		}
+	}
+}
+
 void Planner::CreatePlan(SQLStatement &statement) {
 	auto &profiler = QueryProfiler::Get(context);
 	auto parameter_count = statement.named_param_map.size();
@@ -40,17 +52,16 @@ void Planner::CreatePlan(SQLStatement &statement) {
 	// first bind the tables and columns to the catalog
 	bool parameters_resolved = true;
 	try {
-		profiler.StartPhase(MetricsType::PLANNER_BINDING);
-		binder->parameters = &bound_parameters;
+		profiler.StartPhase(MetricType::PLANNER_BINDING);
+		binder->SetParameters(bound_parameters);
 		auto bound_statement = binder->Bind(statement);
 		profiler.EndPhase();
 
+		RunPostBindExtensions(context, *binder, bound_statement);
+
 		this->names = bound_statement.names;
 		this->types = bound_statement.types;
-		this->plan = FlattenDependentJoins::DecorrelateIndependent(*binder, std::move(bound_statement.plan));
-
-		auto max_tree_depth = ClientConfig::GetConfig(context).max_expression_depth;
-		CheckTreeDepth(*plan, max_tree_depth);
+		this->plan = std::move(bound_statement.plan);
 	} catch (const std::exception &ex) {
 		ErrorData error(ex);
 		this->plan = nullptr;
@@ -61,11 +72,12 @@ void Planner::CreatePlan(SQLStatement &statement) {
 			parameters_resolved = false;
 		} else if (error.Type() != ExceptionType::INVALID) {
 			// different exception type - try operator_extensions
-			auto &config = DBConfig::GetConfig(context);
-			for (auto &extension_op : config.operator_extensions) {
+			for (auto &extension_op : OperatorExtension::Iterate(context)) {
 				auto bound_statement =
 				    extension_op->Bind(context, *this->binder, extension_op->operator_info.get(), statement);
 				if (bound_statement.plan != nullptr) {
+					RunPostBindExtensions(context, *this->binder, bound_statement);
+
 					this->names = bound_statement.names;
 					this->types = bound_statement.types;
 					this->plan = std::move(bound_statement.plan);
@@ -78,6 +90,12 @@ void Planner::CreatePlan(SQLStatement &statement) {
 		} else {
 			throw;
 		}
+	}
+	if (this->plan) {
+		auto max_tree_depth = Settings::Get<MaxExpressionDepthSetting>(context);
+		CheckTreeDepth(*plan, max_tree_depth);
+
+		this->plan = FlattenDependentJoins::DecorrelateIndependent(*this->binder, std::move(this->plan));
 	}
 	this->properties = binder->GetStatementProperties();
 	this->properties.parameter_count = parameter_count;
@@ -161,21 +179,7 @@ static bool OperatorSupportsSerialization(LogicalOperator &op) {
 void Planner::VerifyPlan(ClientContext &context, unique_ptr<LogicalOperator> &op,
                          optional_ptr<bound_parameter_map_t> map) {
 	auto &config = DBConfig::GetConfig(context);
-#ifdef DUCKDB_ALTERNATIVE_VERIFY
-	{
-		auto &serialize_comp = config.options.serialization_compatibility;
-		auto latest_version = SerializationCompatibility::Latest();
-		if (serialize_comp.manually_set &&
-		    serialize_comp.serialization_version != latest_version.serialization_version) {
-			// Serialization should not be skipped, this test relies on the serialization to remove certain fields for
-			// compatibility with older versions. This might change behavior, not doing this might make this test fail.
-		} else {
-			// if alternate verification is enabled we run the original operator
-			return;
-		}
-	}
-#endif
-	if (!op || !ClientConfig::GetConfig(context).verify_serializer) {
+	if (!op || !Settings::Get<DebugVerifySerializerSetting>(context)) {
 		return;
 	}
 	//! SELECT only for now

@@ -3,9 +3,6 @@
 # group: [list]
 
 statement ok
-PRAGMA enable_verification
-
-statement ok
 create table TEST2 (i int[], j int);
 
 statement ok
@@ -172,7 +169,7 @@ NULL
 statement error
 SELECT list_position([1.0,2.0,3.0], 'a')
 ----
-an explicit cast is required
+Conversion Error: Could not convert string "a" to DECIMAL(2,1)
 
 query I
 SELECT list_position([1.0,2.0,3.0]::varchar[], 'a')
@@ -183,7 +180,7 @@ NULL
 statement error
 SELECT list_position('a', 'a')
 ----
-No function matches
+Conversion Error: Type VARCHAR with value 'a' can't be cast to the destination type VARCHAR[]
 
 query T
 SELECT list_position(NULL,NULL)
@@ -279,6 +276,8 @@ SELECT list_position([NULL,7], 7)
 statement error
 SELECT list_position([[1,2,3],[1],[1,2,3])
 ----
+Parser Error: syntax error at or near ")"
+
 
 statement error
 SELECT list_position([[1,2,3],[1],[1,2,3]])
@@ -301,13 +300,13 @@ foreach type <integral> varchar
 
 # list tests
 statement ok
-CREATE TABLE test0 (i ${type}[])
+CREATE TABLE test0 (i {type}[])
 
 statement ok
 INSERT INTO test0 VALUES ([2]), ([1]), ([1, 2]), ([]), ([2, 2]), ([NULL]), ([2, 3])
 
 query T
-SELECT list_position(i,1::${type}) from test0
+SELECT list_position(i,1::{type}) from test0
 ----
 NULL
 1
@@ -450,7 +449,7 @@ foreach type float double
 
 # test floats and doubles
 statement ok
-CREATE TABLE test0 (i ${type}[])
+CREATE TABLE test0 (i {type}[])
 
 statement ok
 INSERT INTO test0 VALUES ([2.0]), ([1.0]), ([1.0, 2.0]), ([]), ([2.0, 2.0]), ([NULL]), ([2.0, 3.0])
@@ -471,7 +470,7 @@ DROP TABLE test0
 
 # with nulls and non-const element
 statement ok
-CREATE TABLE test0 (i ${type}[], j ${type})
+CREATE TABLE test0 (i {type}[], j {type})
 
 statement ok
 INSERT INTO test0 VALUES ([2.0,1.0,3.0], 2.0), ([2.0,3.0,4.0], 5.0), ([1.0], NULL), ([1.0, NULL, 2.0], NULL);

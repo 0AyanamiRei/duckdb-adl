@@ -25,18 +25,32 @@ private:
 	void PushValue(yyjson_mut_val *val);
 
 public:
-	explicit JsonSerializer(yyjson_mut_doc *doc, bool skip_if_null, bool skip_if_empty, bool skip_if_default)
+	explicit JsonSerializer(yyjson_mut_doc *doc, bool skip_if_null, bool skip_if_empty, bool skip_if_default,
+	                        SerializationOptions options_p = SerializationOptions())
 	    : doc(doc), stack({yyjson_mut_obj(doc)}), skip_if_null(skip_if_null), skip_if_empty(skip_if_empty) {
+		options = std::move(options_p);
 		options.serialize_enum_as_string = true;
 		options.serialize_default_values = !skip_if_default;
 	}
 
 	template <class T>
 	static yyjson_mut_val *Serialize(T &value, yyjson_mut_doc *doc, bool skip_if_null, bool skip_if_empty,
-	                                 bool skip_if_default) {
-		JsonSerializer serializer(doc, skip_if_null, skip_if_empty, skip_if_default);
+	                                 bool skip_if_default, SerializationOptions options_p = SerializationOptions()) {
+		JsonSerializer serializer(doc, skip_if_null, skip_if_empty, skip_if_default, options_p);
 		value.Serialize(serializer);
 		return serializer.GetRootObject();
+	}
+
+	template <class T>
+	static string SerializeToString(T &value) {
+		auto doc = yyjson_mut_doc_new(nullptr);
+		JsonSerializer serializer(doc, false, false, false);
+		value.Serialize(serializer);
+		auto result_obj = serializer.GetRootObject();
+		idx_t len = 0;
+		auto data = yyjson_mut_val_write_opts(result_obj, JSONCommon::WRITE_PRETTY_FLAG, nullptr,
+		                                      reinterpret_cast<size_t *>(&len), nullptr);
+		return string(data, len);
 	}
 
 	yyjson_mut_val *GetRootObject() {

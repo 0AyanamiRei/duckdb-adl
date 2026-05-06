@@ -25,7 +25,19 @@ unique_ptr<LogicalOperator> CTEInlining::Optimize(unique_ptr<LogicalOperator> op
 	return op;
 }
 
-static idx_t CountCTEReferences(const LogicalOperator &op, idx_t cte_index) {
+static idx_t CountBaseTableReferences(const LogicalOperator &op) {
+	idx_t number_of_references = 0;
+	if (op.type == LogicalOperatorType::LOGICAL_GET) {
+		number_of_references++;
+	}
+	for (auto &child : op.children) {
+		number_of_references += CountBaseTableReferences(*child);
+	}
+
+	return number_of_references;
+}
+
+static idx_t CountCTEReferences(const LogicalOperator &op, TableIndex cte_index) {
 	if (op.type == LogicalOperatorType::LOGICAL_CTE_REF) {
 		auto &cte = op.Cast<LogicalCTERef>();
 		if (cte.cte_index == cte_index) {
@@ -55,10 +67,14 @@ static bool ContainsLimit(const LogicalOperator &op) {
 	return false;
 }
 
-static bool EndsInAggregateOrDistinct(const LogicalOperator &op) {
-	if (op.type == LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY ||
-	    op.type == LogicalOperatorType::LOGICAL_DISTINCT) {
+bool CTEInlining::EndsInAggregateOrDistinct(const LogicalOperator &op) {
+	switch (op.type) {
+	case LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY:
+	case LogicalOperatorType::LOGICAL_DISTINCT:
+	case LogicalOperatorType::LOGICAL_WINDOW:
 		return true;
+	default:
+		break;
 	}
 	if (op.children.size() != 1) {
 		return false;
@@ -88,8 +104,20 @@ void CTEInlining::TryInlining(unique_ptr<LogicalOperator> &op) {
 		auto &cte = op->Cast<LogicalMaterializedCTE>();
 		auto ref_count = CountCTEReferences(*op, cte.table_index);
 		if (ref_count == 0) {
+			if (cte.children[0]->HasSideEffects()) {
+				// DML CTEs must always execute for side effects even when unreferenced
+				return;
+			}
 			// this CTE is not referenced, we can remove it
 			op = std::move(op->children[1]);
+			return;
+		}
+		if (cte.children[0]->HasSideEffects()) {
+			// Never inline a DML CTE: inlining removes the LOGICAL_MATERIALIZED_CTE
+			// node that guarantees the DML executes exactly once and before the query
+			// side reads the modified table.  With ref_count==1, inlining would merge
+			// the DML into the query pipeline so it no longer precedes the scan.
+			// With ref_count>1 and requires_copy, the DML would execute once per copy.
 			return;
 		}
 		if (cte.materialize == CTEMaterialize::CTE_MATERIALIZE_ALWAYS) {
@@ -129,12 +157,19 @@ void CTEInlining::TryInlining(unique_ptr<LogicalOperator> &op) {
 				return;
 			}
 
+			// Check how many base table references the CTE has
+			auto base_table_references = CountBaseTableReferences(*op->children[0]);
+
+			if (base_table_references > 2 && base_table_references * ref_count > 10) {
+				return;
+			}
+
 			// CTEs require full materialization before the CTE scans begin,
 			// LIMIT and TOP_N operators cannot abort the materialization,
 			// even if only a part of the CTE result is needed.
 			// Therefore, we check if the CTE Scans are below the LIMIT or TOP_N operator
 			// and if so, we try to inline the CTE definition.
-			if (ContainsLimit(*op->children[1])) {
+			if (ContainsLimit(*op->children[1]) || op->children[0]->type == LogicalOperatorType::LOGICAL_EMPTY_RESULT) {
 				// this CTE is referenced multiple times and has a limit, we want to inline it
 				bool success = Inline(op->children[1], *op, true);
 				if (success) {
@@ -146,8 +181,7 @@ void CTEInlining::TryInlining(unique_ptr<LogicalOperator> &op) {
 	}
 }
 
-bool CTEInlining::Inline(unique_ptr<duckdb::LogicalOperator> &op, LogicalOperator &materialized_cte,
-                         bool requires_copy) {
+bool CTEInlining::Inline(unique_ptr<LogicalOperator> &op, LogicalOperator &materialized_cte, bool requires_copy) {
 	if (op->type == LogicalOperatorType::LOGICAL_CTE_REF) {
 		auto &cteref = op->Cast<LogicalCTERef>();
 		auto &cte = materialized_cte.Cast<LogicalCTE>();
@@ -210,7 +244,7 @@ void PreventInlining::VisitExpression(unique_ptr<Expression> *expression) {
 	if (expr->GetExpressionClass() == ExpressionClass::BOUND_FUNCTION) {
 		auto &bound_function = expr->Cast<BoundFunctionExpression>();
 		// if we encounter the ErrorFun function, we still want to inline
-		if (bound_function.function == ErrorFun::GetFunction()) {
+		if (bound_function.function.GetName() == "error") {
 			return;
 		}
 

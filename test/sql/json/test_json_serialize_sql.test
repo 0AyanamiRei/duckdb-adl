@@ -3,6 +3,9 @@
 
 require json
 
+statement ok
+SET storage_compatibility_version='v1.0.0'
+
 # Example with simple query
 statement ok
 SELECT json_serialize_sql('SELECT 1 + 2 FROM tbl1');
@@ -85,6 +88,12 @@ PRAGMA json_execute_serialized_sql(
 6
 15
 24
+
+# Test execute json serialized sql with multiple nested type tags
+query I
+select json_serialize_sql($$select '10'::blob$$);
+----
+<!REGEX>:.*query_location:.*11
 
 # TODO: We should add an option for the deserializer to allow missing properties in the JSON if they can be default constructed
 # Alternatively, make them optional for all the Deserializer's.

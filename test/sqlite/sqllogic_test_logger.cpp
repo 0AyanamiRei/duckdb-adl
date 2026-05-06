@@ -4,15 +4,22 @@
 #include "result_helper.hpp"
 #include "sqllogic_test_runner.hpp"
 #include "test_helpers.hpp"
+#include "duckdb/common/box_renderer.hpp"
+#include "duckdb/common/box_renderer_context.hpp"
 
 namespace duckdb {
 
 SQLLogicTestLogger::SQLLogicTestLogger(ExecuteContext &context, const Command &command)
-    : log_lock(command.runner.log_lock), file_name(command.file_name), query_line(command.query_line),
-      sql_query(context.sql_query) {
+    : connection(command.CommandConnection(context)), log_lock(command.runner.log_lock), file_name(command.file_name),
+      query_line(command.query_line), sql_query(context.sql_query) {
 }
 
 SQLLogicTestLogger::~SQLLogicTestLogger() {
+}
+
+void SQLLogicTestLogger::Log(const string &annotation, const string &str) {
+	std::cerr << annotation << str;
+	AppendFailure(str);
 }
 
 void SQLLogicTestLogger::AppendFailure(const string &log_message) {
@@ -20,19 +27,20 @@ void SQLLogicTestLogger::AppendFailure(const string &log_message) {
 }
 
 void SQLLogicTestLogger::LogFailure(const string &log_message) {
-	std::cerr << log_message;
-	AppendFailure(log_message);
+	Log("", log_message);
 }
 
-void SQLLogicTestLogger::Log(const string &str) {
-	std::cerr << str;
-	AppendFailure(str);
+void SQLLogicTestLogger::LogFailureAnnotation(const string &log_message) {
+	const char *ci = std::getenv("CI");
+	// check the value is "true" otherwise you'll see the prefix in local run outputs
+	auto prefix = (ci && string(ci) == "true") ? "\n::error::" : "";
+	Log(prefix, log_message);
 }
 
-void SQLLogicTestLogger::PrintSummaryHeader(const std::string &file_name) {
+void SQLLogicTestLogger::PrintSummaryHeader(const std::string &file_name, idx_t query_line) {
 	auto failures_count = to_string(FailureSummary::GetSummaryCounter());
 	if (std::getenv("NO_DUPLICATING_HEADERS") == 0) {
-		LogFailure("\n" + failures_count + ". " + file_name + "\n");
+		LogFailure("\n" + failures_count + ". " + file_name + ":" + to_string(query_line) + "\n");
 		PrintLineSep();
 	}
 }
@@ -89,7 +97,7 @@ void SQLLogicTestLogger::PrintSQL() {
 			query += ";";
 		}
 	}
-	Log(query + "\n");
+	Log("", query + "\n");
 }
 
 void SQLLogicTestLogger::PrintSQLFormatted() {
@@ -102,6 +110,8 @@ void SQLLogicTestLogger::PrintSQLFormatted() {
 		switch (token.type) {
 		case SimplifiedTokenType::SIMPLIFIED_TOKEN_IDENTIFIER:
 		case SimplifiedTokenType::SIMPLIFIED_TOKEN_ERROR:
+		case SimplifiedTokenType::SIMPLIFIED_TOKEN_ERROR_EMPHASIS:
+		case SimplifiedTokenType::SIMPLIFIED_TOKEN_ERROR_SUGGESTION:
 			break;
 		case SimplifiedTokenType::SIMPLIFIED_TOKEN_NUMERIC_CONSTANT:
 		case SimplifiedTokenType::SIMPLIFIED_TOKEN_STRING_CONSTANT:
@@ -126,20 +136,12 @@ void SQLLogicTestLogger::PrintSQLFormatted() {
 
 void SQLLogicTestLogger::PrintErrorHeader(const string &file_name, idx_t query_line, const string &description) {
 	std::ostringstream oss;
-	PrintSummaryHeader(file_name);
+	PrintSummaryHeader(file_name, query_line);
 	oss << termcolor::red << termcolor::bold << description << " " << termcolor::reset;
 	if (!file_name.empty()) {
 		oss << termcolor::bold << "(" << file_name << ":" << query_line << ")!" << termcolor::reset;
 	}
-	LogFailure(oss.str() + "\n");
-	LogFailureAnnotation(oss.str());
-}
-
-void SQLLogicTestLogger::LogFailureAnnotation(const string header) {
-	const char *ci = std::getenv("CI");
-	// check the value is "true" otherwise you'll see the prefix in local run outputs
-	auto prefix = (ci && string(ci) == "true") ? "\n::error::" : "";
-	std::cout << prefix << header << std::endl;
+	LogFailureAnnotation(oss.str() + "\n");
 }
 
 void SQLLogicTestLogger::PrintErrorHeader(const string &description) {
@@ -157,8 +159,19 @@ void SQLLogicTestLogger::PrintResultError(const vector<string> &result_values, c
 	PrintExpectedResult(result_values, expected_column_count, false);
 }
 
+string SQLLogicTestLogger::ResultToString(MaterializedQueryResult &result) {
+	if (result.RowCount() < 100) {
+		return result.ToString();
+	}
+	BoxRendererConfig config;
+	config.max_rows = 100;
+	config.max_width = -1;
+	ClientBoxRendererContext render_context(*connection.context);
+	return result.ToBox(render_context, config);
+}
+
 void SQLLogicTestLogger::PrintResultString(MaterializedQueryResult &result) {
-	LogFailure(result.ToString());
+	LogFailure(ResultToString(result));
 }
 
 void SQLLogicTestLogger::PrintResultError(MaterializedQueryResult &result, const vector<string> &values,
@@ -258,7 +271,6 @@ void SQLLogicTestLogger::WrongRowCount(idx_t expected_rows, MaterializedQueryRes
 
 void SQLLogicTestLogger::ColumnCountMismatchCorrectResult(idx_t original_expected_columns, idx_t expected_column_count,
                                                           MaterializedQueryResult &result) {
-
 	std::ostringstream oss;
 	PrintErrorHeader("Wrong column count in query!");
 	oss << "Expected " << termcolor::bold << original_expected_columns << termcolor::reset << " columns, but got "
@@ -282,7 +294,6 @@ void SQLLogicTestLogger::ColumnCountMismatchCorrectResult(idx_t original_expecte
 }
 
 void SQLLogicTestLogger::SplitMismatch(idx_t row_number, idx_t expected_column_count, idx_t split_count) {
-
 	std::ostringstream oss;
 	PrintLineSep();
 	PrintErrorHeader("Error in test! Column count mismatch after splitting on tab on row " + to_string(row_number) +
@@ -296,19 +307,18 @@ void SQLLogicTestLogger::SplitMismatch(idx_t row_number, idx_t expected_column_c
 	PrintLineSep();
 }
 
-void SQLLogicTestLogger::WrongResultHash(QueryResult *expected_result, MaterializedQueryResult &result,
+void SQLLogicTestLogger::WrongResultHash(const string &expected_result, MaterializedQueryResult &result,
                                          const string &expected_hash, const string &actual_hash) {
-	if (expected_result) {
-		expected_result->Print();
-		expected_result->ToString();
-	} else {
-		LogFailure("???\n");
-	}
 	PrintErrorHeader("Wrong result hash!");
 	PrintLineSep();
 	PrintSQL();
 	PrintLineSep();
 	PrintHeader("Expected result:");
+	if (!expected_result.empty()) {
+		LogFailure(expected_result);
+	} else {
+		LogFailure("???\n");
+	}
 	PrintLineSep();
 	PrintHeader("Actual result:");
 	PrintLineSep();

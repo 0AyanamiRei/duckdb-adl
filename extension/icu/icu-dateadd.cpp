@@ -12,9 +12,9 @@
 
 namespace duckdb {
 
-static duckdb::unique_ptr<FunctionData> ICUBindIntervalMonths(ClientContext &context, ScalarFunction &bound_function,
-                                                              vector<duckdb::unique_ptr<Expression>> &arguments) {
-	auto result = ICUDateFunc::Bind(context, bound_function, arguments);
+static duckdb::unique_ptr<FunctionData> ICUBindIntervalMonths(BindScalarFunctionInput &input) {
+	auto result = ICUDateFunc::Bind(input);
+
 	auto &info = result->Cast<ICUDateFunc::BindData>();
 	TZCalendar calendar(*info.calendar, info.cal_setting);
 	if (!calendar.SupportsIntervals()) {
@@ -219,7 +219,6 @@ interval_t ICUCalendarAge::Operation(timestamp_t end_date, timestamp_t start_dat
 }
 
 struct ICUDateAdd : public ICUDateFunc {
-
 	template <typename TA, typename TR, typename OP>
 	static void ExecuteUnary(DataChunk &args, ExpressionState &state, Vector &result) {
 		D_ASSERT(args.ColumnCount() == 1);

@@ -8,6 +8,8 @@
 set -x
 set -e
 
+DUCKDB_PREBUILT_LIBRARY=$1
+
 DUCKDB_BUILD_DIR="./build/debug"
 
 TEST_DIR="./build/extension_metadata_test_data"
@@ -57,7 +59,7 @@ else
 EOL
 
   # Build the extensions using the first config
-  LOCAL_EXTENSION_REPO=$LOCAL_EXTENSION_REPO_UPDATED EXTENSION_CONFIGS=$TEST_DIR/extension_config_before.cmake make debug
+  LOCAL_EXTENSION_REPO=$LOCAL_EXTENSION_REPO_UPDATED EXTENSION_CONFIGS=$TEST_DIR/extension_config_before.cmake DUCKDB_PREBUILT_LIBRARY=$DUCKDB_PREBUILT_LIBRARY make debug
 
   # Set the version and platform now that we have a build
   DUCKDB_VERSION=`$DUCKDB_BUILD_DIR/duckdb -csv -noheader  -c 'select source_id from pragma_version()'`
@@ -81,7 +83,7 @@ EOL
 EOL
 
   # Build the extensions using the second config
-  LOCAL_EXTENSION_REPO=$LOCAL_EXTENSION_REPO_UPDATED EXTENSION_CONFIGS=$TEST_DIR/extension_config_after.cmake BUILD_EXTENSIONS_ONLY=1 make debug
+  LOCAL_EXTENSION_REPO=$LOCAL_EXTENSION_REPO_UPDATED EXTENSION_CONFIGS=$TEST_DIR/extension_config_after.cmake BUILD_EXTENSIONS_ONLY=1 DUCKDB_PREBUILT_LIBRARY=$DUCKDB_PREBUILT_LIBRARY make debug
 
   # For good measure, we also gzip one of the files in the repo to ensure we can do both gzipped and non gzipped
   gzip -1 $LOCAL_EXTENSION_REPO_UPDATED/$DUCKDB_VERSION/$DUCKDB_PLATFORM/icu.duckdb_extension
@@ -96,7 +98,7 @@ EOL
 EOL
 
   # Build the extensions using the incorrect platform
-  DUCKDB_PLATFORM=test_platform EXTENSION_CONFIGS=$TEST_DIR/extension_config_incorrect_platform.cmake BUILD_EXTENSIONS_ONLY=1 make debug
+  DUCKDB_PLATFORM=test_platform EXTENSION_CONFIGS=$TEST_DIR/extension_config_incorrect_platform.cmake BUILD_EXTENSIONS_ONLY=1 DUCKDB_PREBUILT_LIBRARY=$DUCKDB_PREBUILT_LIBRARY make debug
 
   cp $DUCKDB_BUILD_DIR/extension/json/json.duckdb_extension $DIRECT_INSTALL_DIR/json_incorrect_platform.duckdb_extension
 
@@ -110,7 +112,7 @@ EOL
 EOL
 
   # Build the extensions using the incorrect platform
-  DUCKDB_EXPLICIT_VERSION=v1337 EXTENSION_CONFIGS=$TEST_DIR/extension_config_before.cmake BUILD_EXTENSIONS_ONLY=1 make debug
+  DUCKDB_EXPLICIT_VERSION=v1337 EXTENSION_CONFIGS=$TEST_DIR/extension_config_before.cmake BUILD_EXTENSIONS_ONLY=1 DUCKDB_PREBUILT_LIBRARY=$DUCKDB_PREBUILT_LIBRARY make debug
 
   cp $DUCKDB_BUILD_DIR/extension/json/json.duckdb_extension $DIRECT_INSTALL_DIR/json_incorrect_version.duckdb_extension
 
@@ -124,7 +126,7 @@ EOL
 EOL
 
   # Build the extensions using the incorrect platform
-  DUCKDB_PLATFORM=test_platform DUCKDB_EXPLICIT_VERSION=v1337 EXTENSION_CONFIGS=$TEST_DIR/extension_config_before.cmake BUILD_EXTENSIONS_ONLY=1 make debug
+  DUCKDB_PLATFORM=test_platform DUCKDB_EXPLICIT_VERSION=v1337 EXTENSION_CONFIGS=$TEST_DIR/extension_config_before.cmake BUILD_EXTENSIONS_ONLY=1 DUCKDB_PREBUILT_LIBRARY=$DUCKDB_PREBUILT_LIBRARY make debug
 
   cp $DUCKDB_BUILD_DIR/extension/json/json.duckdb_extension $DIRECT_INSTALL_DIR/json_incorrect_version_and_platform.duckdb_extension
 
@@ -137,7 +139,7 @@ EOL
   ###########################
   # Build clean duckdb
   rm -rf $DUCKDB_BUILD_DIR
-  make debug
+  DUCKDB_PREBUILT_LIBRARY=$DUCKDB_PREBUILT_LIBRARY make debug
 
   # Use duckdb to install the extensions into the repositories (note that we are doing a trick here by setting the extension_directory to the local repo dir)
   $DUCKDB_BUILD_DIR/duckdb -unsigned -c "set allow_extensions_metadata_mismatch=true; set extension_directory='$LOCAL_EXTENSION_REPO_INCORRECT_PLATFORM'; install '$DIRECT_INSTALL_DIR/json_incorrect_platform.duckdb_extension'"
@@ -167,11 +169,11 @@ DUCKDB_PLATFORM=`cat $DUCKDB_BUILD_DIR/duckdb_platform_out`
 ###########################
 ### Populate the minio repositories
 ###########################
-AWS_DEFAULT_REGION=eu-west-1 AWS_ACCESS_KEY_ID=minio_duckdb_user AWS_SECRET_ACCESS_KEY=minio_duckdb_user_password aws --endpoint-url http://duckdb-minio.com:9000 s3 sync $LOCAL_EXTENSION_REPO_UPDATED s3://test-bucket-public/ci-test-repo
+AWS_DEFAULT_REGION=eu-west-1 AWS_ACCESS_KEY_ID=minio_duckdb_user AWS_SECRET_ACCESS_KEY=minio_duckdb_user_password AWS_ENDPOINT_URL=http://duckdb-minio.com:9000 rclone sync "$LOCAL_EXTENSION_REPO_UPDATED/" ":s3,provider=AWS,env_auth=true,endpoint=http://duckdb-minio.com:9000:test-bucket-public/ci-test-repo"
 export REMOTE_EXTENSION_REPO_UPDATED=http://duckdb-minio.com:9000/test-bucket-public/ci-test-repo
 export REMOTE_EXTENSION_REPO_DIRECT_PATH=http://duckdb-minio.com:9000/test-bucket-public/ci-test-repo/$DUCKDB_VERSION/$DUCKDB_PLATFORM
 
 ################
 ### Run test
 ################
-RUN_EXTENSION_UPDATE_TEST=1 $DUCKDB_BUILD_DIR/test/unittest test/extension/update_extensions_ci.test
+RUN_EXTENSION_UPDATE_TEST=1 python3 scripts/ci/run_tests.py $DUCKDB_BUILD_DIR/test/unittest test/extension/update_extensions_ci.test

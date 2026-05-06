@@ -1,3 +1,5 @@
+#include "duckdb/common/vector/constant_vector.hpp"
+#include "duckdb/common/vector/flat_vector.hpp"
 #include "duckdb/execution/operator/projection/physical_tableinout_function.hpp"
 
 namespace duckdb {
@@ -11,11 +13,20 @@ public:
 	idx_t row_index;
 	bool new_row;
 	DataChunk input_chunk;
+	idx_t current_ordinality_idx = 1;
 };
 
 class TableInOutGlobalState : public GlobalOperatorState {
 public:
 	TableInOutGlobalState() {
+	}
+
+	idx_t MaxThreads(idx_t source_max_threads) override {
+		// If no state assume maximum parallelism as the source.
+		if (!global_state) {
+			return source_max_threads;
+		}
+		return global_state->MaxThreads();
 	}
 
 	unique_ptr<GlobalTableFunctionState> global_state;
@@ -61,6 +72,15 @@ unique_ptr<GlobalOperatorState> PhysicalTableInOutFunction::GetGlobalOperatorSta
 	return std::move(result);
 }
 
+void PhysicalTableInOutFunction::SetOrdinality(DataChunk &chunk, const optional_idx &ordinality_column_idx,
+                                               const idx_t &ordinality_idx, const idx_t &ordinality) {
+	D_ASSERT(ordinality_column_idx.IsValid());
+	if (ordinality > 0) {
+		constexpr idx_t step = 1;
+		chunk.data[ordinality_column_idx.GetIndex()].Sequence(static_cast<int64_t>(ordinality_idx), step, ordinality);
+	}
+}
+
 OperatorResultType PhysicalTableInOutFunction::Execute(ExecutionContext &context, DataChunk &input, DataChunk &chunk,
                                                        GlobalOperatorState &gstate_p, OperatorState &state_p) const {
 	auto &gstate = gstate_p.Cast<TableInOutGlobalState>();
@@ -68,7 +88,14 @@ OperatorResultType PhysicalTableInOutFunction::Execute(ExecutionContext &context
 	TableFunctionInput data(bind_data.get(), state.local_state.get(), gstate.global_state.get());
 	if (projected_input.empty()) {
 		// straightforward case - no need to project input
-		return function.in_out_function(context, data, input, chunk);
+		auto result = function.in_out_function(context, data, input, chunk);
+		if (this->ordinality_idx.IsValid()) {
+			const idx_t ordinality = chunk.size();
+			SetOrdinality(chunk, this->ordinality_idx, state.current_ordinality_idx, ordinality);
+			state.current_ordinality_idx += ordinality;
+		}
+		chunk.SetChildCardinality(chunk.size());
+		return result;
 	}
 	// when project_input is set we execute the input function row-by-row
 	if (state.new_row) {
@@ -82,11 +109,13 @@ OperatorResultType PhysicalTableInOutFunction::Execute(ExecutionContext &context
 		state.input_chunk.Reset();
 		// set up the input data to the table in-out function
 		for (idx_t col_idx = 0; col_idx < state.input_chunk.ColumnCount(); col_idx++) {
-			ConstantVector::Reference(state.input_chunk.data[col_idx], input.data[col_idx], state.row_index, 1);
+			ConstantVector::Reference(state.input_chunk.data[col_idx], count_t(1), input.data[col_idx], state.row_index,
+			                          input.size());
 		}
 		state.input_chunk.SetCardinality(1);
 		state.row_index++;
 		state.new_row = false;
+		state.current_ordinality_idx = 1;
 	}
 	// set up the output data in "chunk"
 	D_ASSERT(chunk.ColumnCount() > projected_input.size());
@@ -95,9 +124,16 @@ OperatorResultType PhysicalTableInOutFunction::Execute(ExecutionContext &context
 	for (idx_t project_idx = 0; project_idx < projected_input.size(); project_idx++) {
 		auto source_idx = projected_input[project_idx];
 		auto target_idx = base_idx + project_idx;
-		ConstantVector::Reference(chunk.data[target_idx], input.data[source_idx], state.row_index - 1, 1);
+		ConstantVector::Reference(chunk.data[target_idx], count_t(chunk.size()), input.data[source_idx],
+		                          state.row_index - 1, input.size());
 	}
 	auto result = function.in_out_function(context, data, state.input_chunk, chunk);
+	if (this->ordinality_idx.IsValid()) {
+		const idx_t ordinality = chunk.size();
+		SetOrdinality(chunk, this->ordinality_idx, state.current_ordinality_idx, ordinality);
+		state.current_ordinality_idx += ordinality;
+	}
+	chunk.SetChildCardinality(chunk.size());
 	if (result == OperatorResultType::FINISHED) {
 		return result;
 	}

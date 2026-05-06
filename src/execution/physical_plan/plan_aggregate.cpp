@@ -1,3 +1,5 @@
+#include "duckdb/main/settings.hpp"
+
 #include "duckdb/catalog/catalog_entry/aggregate_function_catalog_entry.hpp"
 #include "duckdb/common/operator/subtract.hpp"
 #include "duckdb/execution/operator/aggregate/physical_hash_aggregate.hpp"
@@ -121,7 +123,7 @@ static bool CanUsePerfectHashAggregate(ClientContext &context, LogicalAggregate 
 		auto &group = op.groups[group_idx];
 		auto &stats = op.group_stats[group_idx];
 
-		switch (group->return_type.InternalType()) {
+		switch (group->GetReturnType().InternalType()) {
 		case PhysicalType::INT8:
 		case PhysicalType::INT16:
 		case PhysicalType::INT32:
@@ -136,7 +138,7 @@ static bool CanUsePerfectHashAggregate(ClientContext &context, LogicalAggregate 
 			return false;
 		}
 		// check if the group has stats available
-		auto &group_type = group->return_type;
+		auto &group_type = group->GetReturnType();
 		if (!stats) {
 			// no stats, but we might still be able to use perfect hashing if the type is small enough
 			// for small types we can just set the stats to [type_min, type_max]
@@ -215,14 +217,14 @@ static bool CanUsePerfectHashAggregate(ClientContext &context, LogicalAggregate 
 		bits_per_group.push_back(required_bits);
 		perfect_hash_bits += required_bits;
 		// check if we have exceeded the bits for the hash
-		if (perfect_hash_bits > ClientConfig::GetConfig(context).perfect_ht_threshold) {
+		if (perfect_hash_bits > Settings::Get<PerfectHtThresholdSetting>(context)) {
 			// too many bits for perfect hash
 			return false;
 		}
 	}
 	for (auto &expression : op.expressions) {
 		auto &aggregate = expression->Cast<BoundAggregateExpression>();
-		if (aggregate.IsDistinct() || !aggregate.function.combine) {
+		if (aggregate.IsDistinct() || !aggregate.function.HasStateCombineCallback()) {
 			// distinct aggregates are not supported in perfect hash aggregates
 			return false;
 		}
@@ -234,12 +236,12 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalAggregate &op) {
 	D_ASSERT(op.children.size() == 1);
 
 	reference<PhysicalOperator> plan = CreatePlan(*op.children[0]);
-	plan = ExtractAggregateExpressions(plan, op.expressions, op.groups);
+	plan = ExtractAggregateExpressions(plan, op.expressions, op.groups, op.grouping_sets);
 
 	bool can_use_simple_aggregation = true;
 	for (auto &expression : op.expressions) {
 		auto &aggregate = expression->Cast<BoundAggregateExpression>();
-		if (!aggregate.function.simple_update) {
+		if (!aggregate.function.HasStateSimpleUpdateCallback()) {
 			// unsupported aggregate for simple aggregation: use hash aggregation
 			can_use_simple_aggregation = false;
 			break;
@@ -303,7 +305,8 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalAggregate &op) {
 
 PhysicalOperator &PhysicalPlanGenerator::ExtractAggregateExpressions(PhysicalOperator &child,
                                                                      vector<unique_ptr<Expression>> &aggregates,
-                                                                     vector<unique_ptr<Expression>> &groups) {
+                                                                     vector<unique_ptr<Expression>> &groups,
+                                                                     optional_ptr<vector<GroupingSet>> grouping_sets) {
 	vector<unique_ptr<Expression>> expressions;
 	vector<LogicalType> types;
 
@@ -312,27 +315,27 @@ PhysicalOperator &PhysicalPlanGenerator::ExtractAggregateExpressions(PhysicalOpe
 		auto &bound_aggr = aggr->Cast<BoundAggregateExpression>();
 		if (bound_aggr.order_bys) {
 			// sorted aggregate!
-			FunctionBinder::BindSortedAggregate(context, bound_aggr, groups);
+			FunctionBinder::BindSortedAggregate(context, bound_aggr, groups, grouping_sets);
 		}
 	}
 	for (auto &group : groups) {
-		auto ref = make_uniq<BoundReferenceExpression>(group->return_type, expressions.size());
-		types.push_back(group->return_type);
+		auto ref = make_uniq<BoundReferenceExpression>(group->GetReturnType(), expressions.size());
+		types.push_back(group->GetReturnType());
 		expressions.push_back(std::move(group));
 		group = std::move(ref);
 	}
 	for (auto &aggr : aggregates) {
 		auto &bound_aggr = aggr->Cast<BoundAggregateExpression>();
 		for (auto &child_expr : bound_aggr.children) {
-			auto ref = make_uniq<BoundReferenceExpression>(child_expr->return_type, expressions.size());
-			types.push_back(child_expr->return_type);
+			auto ref = make_uniq<BoundReferenceExpression>(child_expr->GetReturnType(), expressions.size());
+			types.push_back(child_expr->GetReturnType());
 			expressions.push_back(std::move(child_expr));
 			child_expr = std::move(ref);
 		}
 		if (bound_aggr.filter) {
 			auto &filter = bound_aggr.filter;
-			auto ref = make_uniq<BoundReferenceExpression>(filter->return_type, expressions.size());
-			types.push_back(filter->return_type);
+			auto ref = make_uniq<BoundReferenceExpression>(filter->GetReturnType(), expressions.size());
+			types.push_back(filter->GetReturnType());
 			expressions.push_back(std::move(filter));
 			bound_aggr.filter = std::move(ref);
 		}

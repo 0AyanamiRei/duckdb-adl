@@ -1,8 +1,5 @@
 #include "duckdb/parser/parsed_data/attach_info.hpp"
 #include "duckdb/parser/keyword_helper.hpp"
-
-#include "duckdb/storage/storage_info.hpp"
-#include "duckdb/common/optional_idx.hpp"
 #include "duckdb/main/config.hpp"
 
 namespace duckdb {
@@ -11,7 +8,13 @@ unique_ptr<AttachInfo> AttachInfo::Copy() const {
 	auto result = make_uniq<AttachInfo>();
 	result->name = name;
 	result->path = path;
+	if (parsed_path) {
+		result->parsed_path = parsed_path->Copy();
+	}
 	result->options = options;
+	for (auto &entry : parsed_options) {
+		result->parsed_options[entry.first] = entry.second->Copy();
+	}
 	result->on_conflict = on_conflict;
 	return result;
 }
@@ -24,13 +27,20 @@ string AttachInfo::ToString() const {
 	} else if (on_conflict == OnCreateConflict::REPLACE_ON_CONFLICT) {
 		result += " OR REPLACE";
 	}
-	result += " DATABASE";
-	result += KeywordHelper::WriteQuoted(path, '\'');
-	if (!name.empty()) {
-		result += " AS " + KeywordHelper::WriteOptionallyQuoted(name);
+	result += " DATABASE ";
+	if (parsed_path) {
+		result += parsed_path->ToString();
+	} else {
+		result += SQLString(path);
 	}
-	if (!options.empty()) {
+	if (!name.empty()) {
+		result += " AS " + SQLIdentifier(name);
+	}
+	if (!parsed_options.empty() || !options.empty()) {
 		vector<string> stringified;
+		for (auto &opt : parsed_options) {
+			stringified.push_back(StringUtil::Format("%s %s", opt.first, opt.second->ToString()));
+		}
 		for (auto &opt : options) {
 			stringified.push_back(StringUtil::Format("%s %s", opt.first, opt.second.ToSQLString()));
 		}

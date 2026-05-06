@@ -3,14 +3,11 @@
 
 require block_size 262144
 
-statement ok
-SET temp_directory='__TEST_DIR__/test_temp_dir'
+# httpfs require to write encrypted data
+require httpfs
 
 statement ok
-ATTACH '__TEST_DIR__/encrypted_temp_files.db' AS enc (ENCRYPTION_KEY 'asdf');
-
-statement ok
-USE enc;
+SET temp_directory='{TEST_DIR}/test_temp_dir'
 
 # we do not encrypt temporary files at all
 statement ok
@@ -23,7 +20,7 @@ statement ok
 SET enable_external_access=false
 
 statement error
-SET temp_directory='__TEST_DIR__/new_temp_dir'
+SET temp_directory='{TEST_DIR}/new_temp_dir'
 ----
 disabled by configuration
 

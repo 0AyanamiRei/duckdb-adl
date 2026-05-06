@@ -7,10 +7,8 @@
 #include "duckdb/main/secret/secret.hpp"
 
 using namespace duckdb;
-using namespace std;
 
 TEST_CASE("A lot of unions", "[optimizer][.]") {
-
 	DuckDB db(nullptr);
 	Connection con(db);
 

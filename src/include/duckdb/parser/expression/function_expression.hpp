@@ -11,6 +11,7 @@
 #include "duckdb/common/vector.hpp"
 #include "duckdb/parser/parsed_expression.hpp"
 #include "duckdb/parser/result_modifier.hpp"
+#include "duckdb/parser/keyword_helper.hpp"
 
 namespace duckdb {
 //! Represents a function call
@@ -87,12 +88,12 @@ public:
 		// standard function call
 		string result;
 		if (!catalog.empty()) {
-			result += KeywordHelper::WriteOptionallyQuoted(catalog) + ".";
+			result += SQLIdentifier(catalog) + ".";
 		}
 		if (!schema.empty()) {
-			result += KeywordHelper::WriteOptionallyQuoted(schema) + ".";
+			result += SQLIdentifier(schema) + ".";
 		}
-		result += KeywordHelper::WriteOptionallyQuoted(function_name);
+		result += SQLIdentifier(function_name);
 		result += "(";
 		if (distinct) {
 			result += "DISTINCT ";

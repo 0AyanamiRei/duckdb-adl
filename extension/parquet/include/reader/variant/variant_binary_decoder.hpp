@@ -1,8 +1,17 @@
 #pragma once
 
+#include <stdint.h>
+#include <stdlib.h>
+#include <string>
+
 #include "duckdb/common/types/string_type.hpp"
 #include "duckdb/common/types/value.hpp"
-#include "reader/variant/variant_value.hpp"
+#include "duckdb/common/types/variant_value.hpp"
+#include "yyjson.hpp"
+#include "duckdb/common/exception.hpp"
+#include "duckdb/common/string.hpp"
+#include "duckdb/common/typedefs.hpp"
+#include "duckdb/common/vector.hpp"
 
 using namespace duckdb_yyjson;
 
@@ -137,10 +146,8 @@ public:
 	static VariantValue Decode(const VariantMetadata &metadata, const_data_ptr_t data);
 
 public:
-	static VariantValue PrimitiveTypeDecode(const VariantMetadata &metadata, const VariantValueMetadata &value_metadata,
-	                                        const_data_ptr_t data);
-	static VariantValue ShortStringDecode(const VariantMetadata &metadata, const VariantValueMetadata &value_metadata,
-	                                      const_data_ptr_t data);
+	static VariantValue PrimitiveTypeDecode(const VariantValueMetadata &value_metadata, const_data_ptr_t data);
+	static VariantValue ShortStringDecode(const VariantValueMetadata &value_metadata, const_data_ptr_t data);
 	static VariantValue ObjectDecode(const VariantMetadata &metadata, const VariantValueMetadata &value_metadata,
 	                                 const_data_ptr_t data);
 	static VariantValue ArrayDecode(const VariantMetadata &metadata, const VariantValueMetadata &value_metadata,

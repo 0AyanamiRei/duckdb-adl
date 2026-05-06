@@ -1,6 +1,7 @@
 {
     "group": "value_interface",
     "deprecated": false,
+    "description": "Functions to create a `duckdb_value` for each of DuckDB's supported data types, and to access the contents of a `duckdb_value`. The `duckdb_value` wrapper allows handling of primitive and arbitrarily (nested) types through the same interface.",
     "entries": [
         {
             "name": "duckdb_destroy_value",
@@ -28,7 +29,7 @@
                 }
             ],
             "comment": {
-                "description": "Creates a value from a null-terminated string\n\n",
+                "description": "Creates a value from a null-terminated string. Returns nullptr if the string is not valid UTF-8 or other invalid input.\n\nSuperseded by `duckdb_create_varchar_length`.\n\n",
                 "param_comments": {
                     "text": "The null-terminated string"
                 },
@@ -49,7 +50,7 @@
                 }
             ],
             "comment": {
-                "description": "Creates a value from a string\n\n",
+                "description": "Creates a value from a string. Returns nullptr if the string is not valid UTF-8 or other invalid input.\n\n",
                 "param_comments": {
                     "text": "The text",
                     "length": "The length of the text"
@@ -245,18 +246,18 @@
             }
         },
         {
-            "name": "duckdb_create_varint",
+            "name": "duckdb_create_bignum",
             "return_type": "duckdb_value",
             "params": [
                 {
-                    "type": "duckdb_varint",
+                    "type": "duckdb_bignum",
                     "name": "input"
                 }
             ],
             "comment": {
-                "description": "Creates a VARINT value from a duckdb_varint\n\n",
+                "description": "Creates a BIGNUM value from a duckdb_bignum\n\n",
                 "param_comments": {
-                    "input": "The duckdb_varint value"
+                    "input": "The duckdb_bignum value"
                 },
                 "return_value": "The value. This must be destroyed with `duckdb_destroy_value`."
             }
@@ -410,6 +411,23 @@
                 "description": "Creates a TIMESTAMP_TZ value from a duckdb_timestamp\n\n",
                 "param_comments": {
                     "input": "The duckdb_timestamp value"
+                },
+                "return_value": "The value. This must be destroyed with `duckdb_destroy_value`."
+            }
+        },
+        {
+            "name": "duckdb_create_timestamp_tz_ns",
+            "return_type": "duckdb_value",
+            "params": [
+                {
+                    "type": "duckdb_timestamp_ns",
+                    "name": "input"
+                }
+            ],
+            "comment": {
+                "description": "Creates a TIMESTAMP_TZ_NS value from a duckdb_timestamp_ns\n\n",
+                "param_comments": {
+                    "input": "The duckdb_timestamp_ns value"
                 },
                 "return_value": "The value. This must be destroyed with `duckdb_destroy_value`."
             }
@@ -726,8 +744,8 @@
             }
         },
         {
-            "name": "duckdb_get_varint",
-            "return_type": "duckdb_varint",
+            "name": "duckdb_get_bignum",
+            "return_type": "duckdb_bignum",
             "params": [
                 {
                     "type": "duckdb_value",
@@ -735,11 +753,11 @@
                 }
             ],
             "comment": {
-                "description": "Returns the duckdb_varint value of the given value.\nThe `data` field must be destroyed with `duckdb_free`.\n\n",
+                "description": "Returns the duckdb_bignum value of the given value.\nThe `data` field must be destroyed with `duckdb_free`.\n\n",
                 "param_comments": {
-                    "val": "A duckdb_value containing a VARINT"
+                    "val": "A duckdb_value containing a BIGNUM"
                 },
-                "return_value": "A duckdb_varint. The `data` field must be destroyed with `duckdb_free`."
+                "return_value": "A duckdb_bignum. The `data` field must be destroyed with `duckdb_free`."
             }
         },
         {
@@ -893,6 +911,23 @@
                     "val": "A duckdb_value containing a TIMESTAMP_TZ"
                 },
                 "return_value": "A duckdb_timestamp, or MinValue<timestamp_tz> if the value cannot be converted"
+            }
+        },
+        {
+            "name": "duckdb_get_timestamp_tz_ns",
+            "return_type": "duckdb_timestamp_ns",
+            "params": [
+                {
+                    "type": "duckdb_value",
+                    "name": "val"
+                }
+            ],
+            "comment": {
+                "description": "Returns the TIMESTAMP_TZ_NS value of the given value.\n\n",
+                "param_comments": {
+                    "val": "A duckdb_value containing a TIMESTAMP_TZ_NS"
+                },
+                "return_value": "A duckdb_timestamp_ns, or MinValue<timestamp_tz_ns> if the value cannot be converted"
             }
         },
         {
@@ -1151,7 +1186,7 @@
                     "map_type": "The map type",
                     "keys": "The keys of the map",
                     "values": "The values of the map",
-                    "entry_count": "The number of entrys (key-value pairs) in the map"
+                    "entry_count": "The number of entries (key-value pairs) in the map"
                 },
                 "return_value": "The map value, or nullptr, if the parameters are invalid."
             }

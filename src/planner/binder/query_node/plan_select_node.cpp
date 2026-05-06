@@ -16,10 +16,8 @@ unique_ptr<LogicalOperator> Binder::PlanFilter(unique_ptr<Expression> condition,
 }
 
 unique_ptr<LogicalOperator> Binder::CreatePlan(BoundSelectNode &statement) {
-	unique_ptr<LogicalOperator> root;
-	D_ASSERT(statement.from_table);
-	root = CreatePlan(*statement.from_table);
-	D_ASSERT(root);
+	D_ASSERT(statement.from_table.plan);
+	auto root = std::move(statement.from_table.plan);
 
 	// plan the sample clause
 	if (statement.sample_options) {
@@ -30,7 +28,7 @@ unique_ptr<LogicalOperator> Binder::CreatePlan(BoundSelectNode &statement) {
 		root = PlanFilter(std::move(statement.where_clause), std::move(root));
 	}
 
-	if (!statement.aggregates.empty() || !statement.groups.group_expressions.empty()) {
+	if (!statement.aggregates.empty() || !statement.groups.group_expressions.empty() || statement.having) {
 		if (!statement.groups.group_expressions.empty()) {
 			// visit the groups
 			for (auto &group : statement.groups.group_expressions) {
@@ -121,8 +119,9 @@ unique_ptr<LogicalOperator> Binder::CreatePlan(BoundSelectNode &statement) {
 		D_ASSERT(root);
 		vector<unique_ptr<Expression>> prune_expressions;
 		for (idx_t i = 0; i < statement.column_count; i++) {
-			prune_expressions.push_back(make_uniq<BoundColumnRefExpression>(
-			    projection.expressions[i]->return_type, ColumnBinding(statement.projection_index, i)));
+			prune_expressions.push_back(
+			    make_uniq<BoundColumnRefExpression>(projection.expressions[i]->GetReturnType(),
+			                                        ColumnBinding(statement.projection_index, ProjectionIndex(i))));
 		}
 		auto prune = make_uniq<LogicalProjection>(statement.prune_index, std::move(prune_expressions));
 		prune->AddChild(std::move(root));

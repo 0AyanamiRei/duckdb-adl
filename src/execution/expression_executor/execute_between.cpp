@@ -91,9 +91,9 @@ static idx_t BetweenLoopTypeSwitch(Vector &input, Vector &lower, Vector &upper, 
 unique_ptr<ExpressionState> ExpressionExecutor::InitializeState(const BoundBetweenExpression &expr,
                                                                 ExpressionExecutorState &root) {
 	auto result = make_uniq<ExpressionState>(expr, root);
-	result->AddChild(*expr.input);
-	result->AddChild(*expr.lower);
-	result->AddChild(*expr.upper);
+	result->AddChild(expr.Input());
+	result->AddChild(expr.LowerBound());
+	result->AddChild(expr.UpperBound());
 
 	result->Finalize();
 	return result;
@@ -108,20 +108,20 @@ void ExpressionExecutor::Execute(const BoundBetweenExpression &expr, ExpressionS
 	auto &lower = state->intermediate_chunk.data[1];
 	auto &upper = state->intermediate_chunk.data[2];
 
-	Execute(*expr.input, state->child_states[0].get(), sel, count, input);
-	Execute(*expr.lower, state->child_states[1].get(), sel, count, lower);
-	Execute(*expr.upper, state->child_states[2].get(), sel, count, upper);
+	Execute(expr.Input(), state->child_states[0].get(), sel, count, input);
+	Execute(expr.LowerBound(), state->child_states[1].get(), sel, count, lower);
+	Execute(expr.UpperBound(), state->child_states[2].get(), sel, count, upper);
 
 	Vector intermediate1(LogicalType::BOOLEAN);
 	Vector intermediate2(LogicalType::BOOLEAN);
 
-	if (expr.upper_inclusive && expr.lower_inclusive) {
+	if (expr.UpperInclusive() && expr.LowerInclusive()) {
 		VectorOperations::GreaterThanEquals(input, lower, intermediate1, count);
 		VectorOperations::LessThanEquals(input, upper, intermediate2, count);
-	} else if (expr.lower_inclusive) {
+	} else if (expr.LowerInclusive()) {
 		VectorOperations::GreaterThanEquals(input, lower, intermediate1, count);
 		VectorOperations::LessThan(input, upper, intermediate2, count);
-	} else if (expr.upper_inclusive) {
+	} else if (expr.UpperInclusive()) {
 		VectorOperations::GreaterThan(input, lower, intermediate1, count);
 		VectorOperations::LessThanEquals(input, upper, intermediate2, count);
 	} else {
@@ -137,21 +137,24 @@ idx_t ExpressionExecutor::Select(const BoundBetweenExpression &expr, ExpressionS
 	throw InternalException("ExpressionExecutor::Select not available with DUCKDB_SMALLER_BINARY");
 #else
 	// resolve the children
-	Vector input(state->intermediate_chunk.data[0]);
-	Vector lower(state->intermediate_chunk.data[1]);
-	Vector upper(state->intermediate_chunk.data[2]);
+	// reset intermediate vectors to undo any type changes from previous calls
+	// (e.g. SetVectorType(CONSTANT) modifies the shared buffer)
+	state->intermediate_chunk.Reset();
+	Vector input(Vector::Ref(state->intermediate_chunk.data[0]));
+	Vector lower(Vector::Ref(state->intermediate_chunk.data[1]));
+	Vector upper(Vector::Ref(state->intermediate_chunk.data[2]));
 
-	Execute(*expr.input, state->child_states[0].get(), sel, count, input);
-	Execute(*expr.lower, state->child_states[1].get(), sel, count, lower);
-	Execute(*expr.upper, state->child_states[2].get(), sel, count, upper);
+	Execute(expr.Input(), state->child_states[0].get(), sel, count, input);
+	Execute(expr.LowerBound(), state->child_states[1].get(), sel, count, lower);
+	Execute(expr.UpperBound(), state->child_states[2].get(), sel, count, upper);
 
-	if (expr.upper_inclusive && expr.lower_inclusive) {
+	if (expr.UpperInclusive() && expr.LowerInclusive()) {
 		return BetweenLoopTypeSwitch<BothInclusiveBetweenOperator>(input, lower, upper, sel, count, true_sel,
 		                                                           false_sel);
-	} else if (expr.lower_inclusive) {
+	} else if (expr.LowerInclusive()) {
 		return BetweenLoopTypeSwitch<LowerInclusiveBetweenOperator>(input, lower, upper, sel, count, true_sel,
 		                                                            false_sel);
-	} else if (expr.upper_inclusive) {
+	} else if (expr.UpperInclusive()) {
 		return BetweenLoopTypeSwitch<UpperInclusiveBetweenOperator>(input, lower, upper, sel, count, true_sel,
 		                                                            false_sel);
 	} else {

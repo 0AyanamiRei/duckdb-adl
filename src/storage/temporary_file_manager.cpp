@@ -1,11 +1,10 @@
 #include "duckdb/storage/temporary_file_manager.hpp"
 
-#include "duckdb/common/chrono.hpp"
 #include "duckdb/common/enum_util.hpp"
 #include "duckdb/parallel/task_scheduler.hpp"
 #include "duckdb/storage/buffer/temporary_file_information.hpp"
-#include "duckdb/storage/standard_buffer_manager.hpp"
 #include "duckdb/main/database.hpp"
+#include "duckdb/main/settings.hpp"
 #include "duckdb/common/encryption_functions.hpp"
 #include "zstd.h"
 
@@ -73,7 +72,6 @@ TemporaryFileIdentifier::TemporaryFileIdentifier(TemporaryBufferSize size_p, idx
 TemporaryFileIdentifier::TemporaryFileIdentifier(DatabaseInstance &db, TemporaryBufferSize size_p, idx_t file_index_p,
                                                  bool encrypted_p)
     : size(size_p), file_index(file_index_p), encrypted(encrypted_p) {
-
 	if (encrypted) {
 		// generate a random encryption key ID and corresponding key
 		EncryptionEngine::AddTempKeyToCache(db);
@@ -210,7 +208,8 @@ TemporaryFileIndex TemporaryFileHandle::TryGetBlockIndex(idx_t block_header_size
 	return TemporaryFileIndex(identifier, block_index, block_header_size);
 }
 
-unique_ptr<FileBuffer> TemporaryFileHandle::ReadTemporaryBuffer(const TemporaryFileIndex &index_in_file,
+unique_ptr<FileBuffer> TemporaryFileHandle::ReadTemporaryBuffer(QueryContext context,
+                                                                const TemporaryFileIndex &index_in_file,
                                                                 unique_ptr<FileBuffer> reusable_buffer) const {
 	auto &buffer_manager = BufferManager::GetBufferManager(db);
 	auto block_index = index_in_file.block_index.GetIndex();
@@ -237,13 +236,13 @@ unique_ptr<FileBuffer> TemporaryFileHandle::ReadTemporaryBuffer(const TemporaryF
 	if (IsEncrypted()) {
 		uint8_t encryption_metadata[DEFAULT_ENCRYPTED_BUFFER_HEADER_SIZE];
 		//! Read nonce and tag.
-		handle->Read(encryption_metadata, DEFAULT_ENCRYPTED_BUFFER_HEADER_SIZE, read_position);
+		handle->Read(context, encryption_metadata, DEFAULT_ENCRYPTED_BUFFER_HEADER_SIZE, read_position);
 		//! Read the encrypted compressed buffer.
-		handle->Read(read_buffer, read_size, read_position + DEFAULT_ENCRYPTED_BUFFER_HEADER_SIZE);
+		handle->Read(context, read_buffer, read_size, read_position + DEFAULT_ENCRYPTED_BUFFER_HEADER_SIZE);
 		//! Decrypt the compressed buffer.
 		EncryptionEngine::DecryptTemporaryBuffer(db, read_buffer, read_size, encryption_metadata);
 	} else {
-		handle->Read(read_buffer, read_size, read_position);
+		handle->Read(context, read_buffer, read_size, read_position);
 	}
 
 	if (is_uncompressed) {
@@ -496,7 +495,7 @@ TemporaryFileManager::~TemporaryFileManager() {
 TemporaryFileManager::TemporaryFileManagerLock::TemporaryFileManagerLock(mutex &mutex) : lock(mutex) {
 }
 
-void TemporaryFileManager::WriteTemporaryBuffer(block_id_t block_id, FileBuffer &buffer) {
+idx_t TemporaryFileManager::WriteTemporaryBuffer(block_id_t block_id, FileBuffer &buffer) {
 	// We group DEFAULT_BLOCK_ALLOC_SIZE blocks into the same file.
 	D_ASSERT(buffer.AllocSize() == BufferManager::GetBufferManager(db).GetBlockAllocSize());
 
@@ -539,6 +538,7 @@ void TemporaryFileManager::WriteTemporaryBuffer(block_id_t block_id, FileBuffer 
 	handle->WriteTemporaryBuffer(buffer, index.block_index.GetIndex(), compressed_buffer);
 
 	compression_adaptivity.Update(compression_result.level, time_before_ns);
+	return static_cast<idx_t>(compression_result.size);
 }
 
 TemporaryFileManager::CompressionResult
@@ -640,11 +640,12 @@ void TemporaryFileManager::DecreaseSizeOnDisk(idx_t bytes) {
 }
 
 bool TemporaryFileManager::IsEncrypted() const {
-	return db.config.options.temp_file_encryption;
+	return Settings::Get<TempFileEncryptionSetting>(db);
 }
 
-unique_ptr<FileBuffer> TemporaryFileManager::ReadTemporaryBuffer(block_id_t id,
-                                                                 unique_ptr<FileBuffer> reusable_buffer) {
+unique_ptr<FileBuffer> TemporaryFileManager::ReadTemporaryBuffer(QueryContext context, block_id_t id,
+                                                                 unique_ptr<FileBuffer> reusable_buffer,
+                                                                 idx_t *eviction_size) {
 	TemporaryFileIndex index;
 	optional_ptr<TemporaryFileHandle> handle;
 	{
@@ -653,8 +654,13 @@ unique_ptr<FileBuffer> TemporaryFileManager::ReadTemporaryBuffer(block_id_t id,
 		handle = GetFileHandle(lock, index.identifier);
 	}
 
+	// If eviction size requested, set it to the size of the block (compressed size if applicable).
+	if (eviction_size) {
+		*eviction_size = NumericCast<idx_t>(index.identifier.size);
+	}
+
 	// before the reusable buffer is given,
-	auto buffer = handle->ReadTemporaryBuffer(index, std::move(reusable_buffer));
+	auto buffer = handle->ReadTemporaryBuffer(context, index, std::move(reusable_buffer));
 	{
 		// remove the block (and potentially erase the temp file)
 		TemporaryFileManagerLock lock(manager_lock);
@@ -663,11 +669,12 @@ unique_ptr<FileBuffer> TemporaryFileManager::ReadTemporaryBuffer(block_id_t id,
 	return buffer;
 }
 
-void TemporaryFileManager::DeleteTemporaryBuffer(block_id_t id) {
+idx_t TemporaryFileManager::DeleteTemporaryBuffer(block_id_t id) {
 	TemporaryFileManagerLock lock(manager_lock);
 	auto index = GetTempBlockIndex(lock, id);
 	auto handle = GetFileHandle(lock, index.identifier);
 	EraseUsedBlock(lock, id, *handle, index);
+	return static_cast<idx_t>(index.identifier.size);
 }
 
 vector<TemporaryFileInformation> TemporaryFileManager::GetTemporaryFiles() {
@@ -759,9 +766,12 @@ TemporaryDirectoryHandle::~TemporaryDirectoryHandle() {
 			// we want to remove all files in the directory
 			fs.RemoveDirectory(temp_directory);
 		} else {
+			vector<string> full_path_files_to_delete;
+			full_path_files_to_delete.reserve(files_to_delete.size());
 			for (auto &file : files_to_delete) {
-				fs.RemoveFile(fs.JoinPath(temp_directory, file));
+				full_path_files_to_delete.push_back(fs.JoinPath(temp_directory, file));
 			}
+			fs.RemoveFiles(full_path_files_to_delete);
 		}
 	}
 }

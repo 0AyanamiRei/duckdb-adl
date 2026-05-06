@@ -1,3 +1,8 @@
+#include "duckdb/common/vector/array_vector.hpp"
+#include "duckdb/common/vector/flat_vector.hpp"
+#include "duckdb/common/vector/list_vector.hpp"
+#include "duckdb/common/vector/map_vector.hpp"
+#include "duckdb/common/vector/struct_vector.hpp"
 #include "duckdb/common/types/row/tuple_data_collection.hpp"
 
 #include "duckdb/common/fast_mem.hpp"
@@ -5,6 +10,8 @@
 #include "duckdb/common/row_operations/row_operations.hpp"
 #include "duckdb/common/type_visitor.hpp"
 #include "duckdb/common/types/row/tuple_data_allocator.hpp"
+#include "duckdb/main/database.hpp"
+#include "duckdb/parallel/parallel_destroy_task.hpp"
 
 #include <algorithm>
 
@@ -12,17 +19,36 @@ namespace duckdb {
 
 using ValidityBytes = TupleDataLayout::ValidityBytes;
 
-TupleDataCollection::TupleDataCollection(BufferManager &buffer_manager, shared_ptr<TupleDataLayout> layout_ptr_p)
-    : layout_ptr(std::move(layout_ptr_p)), layout(*layout_ptr),
-      allocator(make_shared_ptr<TupleDataAllocator>(buffer_manager, layout_ptr)) {
+TupleDataCollection::TupleDataCollection(BufferManager &buffer_manager, shared_ptr<TupleDataLayout> layout_ptr_p,
+                                         MemoryTag tag_p, shared_ptr<ArenaAllocator> stl_allocator_p)
+    : scheduler(TaskScheduler::GetScheduler(buffer_manager.GetDatabase())),
+      stl_allocator(stl_allocator_p ? std::move(stl_allocator_p)
+                                    : make_shared_ptr<ArenaAllocator>(buffer_manager.GetBufferAllocator())),
+      layout_ptr(std::move(layout_ptr_p)), layout(*layout_ptr), tag(tag_p),
+      allocator(make_shared_ptr<TupleDataAllocator>(buffer_manager, layout_ptr, tag, stl_allocator)),
+      segments(*stl_allocator), scatter_functions(*stl_allocator), gather_functions(*stl_allocator) {
 	Initialize();
 }
 
+TupleDataCollection::TupleDataCollection(ClientContext &context, shared_ptr<TupleDataLayout> layout_ptr, MemoryTag tag,
+                                         shared_ptr<ArenaAllocator> stl_allocator)
+    : TupleDataCollection(BufferManager::GetBufferManager(context), std::move(layout_ptr), tag,
+                          std::move(stl_allocator)) {
+}
+
 TupleDataCollection::~TupleDataCollection() {
+	static constexpr idx_t PARALLEL_DESTROY_THRESHOLD = 1048576;
+	if (count > PARALLEL_DESTROY_THRESHOLD) {
+		ParallelDestroyTask<decltype(segments)>::Schedule(scheduler, segments);
+	}
 }
 
 void TupleDataCollection::Initialize() {
 	D_ASSERT(!layout.GetTypes().empty());
+	if (TuplesPerBlock() == 0) {
+		throw NotImplementedException("Too many columns: tuple width exceeds block size of %llu",
+		                              allocator->GetBufferManager().GetBlockSize());
+	}
 	this->count = 0;
 	this->data_size = 0;
 	if (layout.IsSortKeyLayout()) {
@@ -40,7 +66,7 @@ void TupleDataCollection::Initialize() {
 }
 
 unique_ptr<TupleDataCollection> TupleDataCollection::CreateUnique() const {
-	return make_uniq<TupleDataCollection>(allocator->GetBufferManager(), layout_ptr);
+	return make_uniq<TupleDataCollection>(allocator->GetBufferManager(), layout_ptr, tag);
 }
 
 void GetAllColumnIDsInternal(vector<column_t> &column_ids, const idx_t column_count) {
@@ -79,7 +105,7 @@ idx_t TupleDataCollection::ChunkCount() const {
 }
 
 idx_t TupleDataCollection::SizeInBytes() const {
-	return data_size;
+	return data_size + stl_allocator->AllocationSize();
 }
 
 void TupleDataCollection::Unpin() {
@@ -95,13 +121,26 @@ void TupleDataCollection::SetPartitionIndex(const idx_t index) {
 	allocator->SetPartitionIndex(index);
 }
 
-vector<data_ptr_t> TupleDataCollection::GetRowBlockPointers() const {
+vector<pair<idx_t, idx_t>> TupleDataCollection::GetChunkRangesForPartition(const idx_t partition_idx) const {
+	idx_t chunk_idx_start = 0;
+	vector<pair<idx_t, idx_t>> chunk_ranges;
+	for (const auto &segment : segments) {
+		const idx_t segment_partition_idx = segment->allocator->GetPartitionIndex();
+		if (partition_idx == segment_partition_idx) {
+			chunk_ranges.emplace_back(chunk_idx_start, chunk_idx_start + segment->ChunkCount());
+		}
+		chunk_idx_start += segment->ChunkCount();
+	}
+	return chunk_ranges;
+}
+
+vector<data_ptr_t> TupleDataCollection::GetRowBlockPointers() {
 	D_ASSERT(segments.size() == 1);
-	const auto &segment = *segments[0];
+	auto &segment = *segments[0];
 	vector<data_ptr_t> result;
 	result.reserve(segment.pinned_row_handles.size());
-	for (const auto &pinned_row_handle : segment.pinned_row_handles) {
-		result.emplace_back(pinned_row_handle.Ptr());
+	for (auto &pinned_row_handle : segment.pinned_row_handles) {
+		result.emplace_back(pinned_row_handle.GetDataMutable());
 	}
 	return result;
 }
@@ -110,23 +149,29 @@ void TupleDataCollection::DestroyChunks(const idx_t chunk_idx_begin, const idx_t
 	D_ASSERT(segments.size() == 1); // Assume 1 segment for now (multi-segment destroys can be implemented if needed)
 	D_ASSERT(chunk_idx_begin <= chunk_idx_end && chunk_idx_end <= ChunkCount());
 	auto &segment = *segments[0];
-	auto &chunk_begin = segment.chunks[chunk_idx_begin];
+	auto &chunk_begin = *segment.chunks[chunk_idx_begin];
 
 	const auto row_block_begin = chunk_begin.row_block_ids.Start();
 	if (chunk_idx_end == ChunkCount()) {
 		segment.allocator->DestroyRowBlocks(row_block_begin, segment.allocator->RowBlockCount());
 	} else {
-		auto &chunk_end = segment.chunks[chunk_idx_end];
+		auto &chunk_end = *segment.chunks[chunk_idx_end];
 		const auto row_block_end = chunk_end.row_block_ids.Start();
 		segment.allocator->DestroyRowBlocks(row_block_begin, row_block_end);
 	}
 
 	if (!layout.AllConstant()) {
+		if (chunk_begin.heap_block_ids.Empty()) {
+			return;
+		}
 		const auto heap_block_begin = chunk_begin.heap_block_ids.Start();
 		if (chunk_idx_end == ChunkCount()) {
 			segment.allocator->DestroyHeapBlocks(heap_block_begin, segment.allocator->HeapBlockCount());
 		} else {
-			auto &chunk_end = segment.chunks[chunk_idx_end];
+			auto &chunk_end = *segment.chunks[chunk_idx_end];
+			if (chunk_end.heap_block_ids.Empty()) {
+				return;
+			}
 			const auto heap_block_end = chunk_end.heap_block_ids.Start();
 			segment.allocator->DestroyHeapBlocks(heap_block_begin, heap_block_end);
 		}
@@ -174,7 +219,7 @@ void TupleDataCollection::InitializeAppend(TupleDataAppendState &append_state, v
 void TupleDataCollection::InitializeAppend(TupleDataPinState &pin_state, TupleDataPinProperties properties) {
 	pin_state.properties = properties;
 	if (segments.empty()) {
-		segments.emplace_back(make_unsafe_uniq<TupleDataSegment>(allocator));
+		segments.emplace_back(stl_allocator->MakeUnsafePtr<TupleDataSegment>(allocator));
 	}
 }
 
@@ -288,13 +333,14 @@ static inline void ToUnifiedFormatInternal(TupleDataVectorFormat &format, Vector
 		auto &entries = StructVector::GetEntries(vector);
 		D_ASSERT(format.children.size() == entries.size());
 		for (idx_t struct_col_idx = 0; struct_col_idx < entries.size(); struct_col_idx++) {
-			ToUnifiedFormatInternal(format.children[struct_col_idx], *entries[struct_col_idx], count);
+			ToUnifiedFormatInternal(format.children[struct_col_idx], entries[struct_col_idx], count);
 		}
 		break;
 	}
 	case PhysicalType::LIST:
 		D_ASSERT(format.children.size() == 1);
-		ToUnifiedFormatInternal(format.children[0], ListVector::GetEntry(vector), ListVector::GetListSize(vector));
+		ToUnifiedFormatInternal(format.children[0], ListVector::GetChildMutable(vector),
+		                        ListVector::GetListSize(vector));
 		break;
 	case PhysicalType::ARRAY: {
 		D_ASSERT(format.children.size() == 1);
@@ -317,7 +363,7 @@ static inline void ToUnifiedFormatInternal(TupleDataVectorFormat &format, Vector
 		}
 		format.unified.data = reinterpret_cast<data_ptr_t>(format.array_list_entries.get());
 
-		ToUnifiedFormatInternal(format.children[0], ArrayVector::GetEntry(vector), child_array_total_size);
+		ToUnifiedFormatInternal(format.children[0], ArrayVector::GetChildMutable(vector), child_array_total_size);
 		break;
 	}
 	default:
@@ -430,7 +476,7 @@ void TupleDataCollection::CopyRows(TupleDataChunkState &chunk_state, TupleDataCh
 void TupleDataCollection::FindHeapPointers(TupleDataChunkState &chunk_state, const idx_t chunk_count) const {
 	D_ASSERT(!layout.AllConstant());
 	const auto row_locations = FlatVector::GetData<data_ptr_t>(chunk_state.row_locations);
-	const auto heap_sizes = FlatVector::GetData<idx_t>(chunk_state.heap_sizes);
+	const auto heap_sizes = FlatVector::GetDataMutable<idx_t>(chunk_state.heap_sizes);
 
 	auto &not_found = chunk_state.utility;
 	idx_t not_found_count = 0;
@@ -463,7 +509,7 @@ void TupleDataCollection::Combine(TupleDataCollection &other) {
 	other.Reset();
 }
 
-void TupleDataCollection::AddSegment(unsafe_unique_ptr<TupleDataSegment> segment) {
+void TupleDataCollection::AddSegment(unsafe_arena_ptr<TupleDataSegment> segment) {
 	count += segment->count;
 	data_size += segment->data_size;
 	segments.emplace_back(std::move(segment));
@@ -498,7 +544,7 @@ void TupleDataCollection::InitializeChunk(DataChunk &chunk, const vector<column_
 	chunk.Initialize(allocator->GetAllocator(), chunk_types);
 }
 
-void TupleDataCollection::InitializeScanChunk(TupleDataScanState &state, DataChunk &chunk) const {
+void TupleDataCollection::InitializeScanChunk(const TupleDataScanState &state, DataChunk &chunk) const {
 	auto &column_ids = state.chunk_state.column_ids;
 	D_ASSERT(!column_ids.empty());
 	vector<LogicalType> chunk_types;
@@ -556,11 +602,18 @@ void TupleDataCollection::InitializeScan(TupleDataParallelScanState &state, vect
 	InitializeScan(state.scan_state, std::move(column_ids), properties);
 }
 
-idx_t TupleDataCollection::FetchChunk(TupleDataScanState &state, const idx_t segment_idx, const idx_t chunk_idx,
-                                      const bool init_heap) {
-	auto &segment = *segments[segment_idx];
-	allocator->InitializeChunkState(segment, state.pin_state, state.chunk_state, chunk_idx, init_heap);
-	return segment.chunks[chunk_idx].count;
+idx_t TupleDataCollection::FetchChunk(TupleDataScanState &state, idx_t chunk_idx, bool init_heap,
+                                      optional_ptr<SortKeyPayloadState> sort_key_payload_state) {
+	for (idx_t segment_idx = 0; segment_idx < segments.size(); segment_idx++) {
+		auto &segment = *segments[segment_idx];
+		if (chunk_idx < segment.ChunkCount()) {
+			segment.allocator->InitializeChunkState(segment, state.pin_state, state.chunk_state, chunk_idx, init_heap,
+			                                        sort_key_payload_state);
+			return segment.chunks[chunk_idx]->count;
+		}
+		chunk_idx -= segment.ChunkCount();
+	}
+	throw InternalException("Chunk index out of in TupleDataCollection::FetchChunk");
 }
 
 bool TupleDataCollection::Scan(TupleDataScanState &state, DataChunk &result) {
@@ -603,6 +656,43 @@ bool TupleDataCollection::Scan(TupleDataParallelScanState &gstate, TupleDataLoca
 	return true;
 }
 
+idx_t TupleDataCollection::Seek(TupleDataScanState &state, const idx_t target_chunk) {
+	D_ASSERT(state.pin_state.properties == TupleDataPinProperties::UNPIN_AFTER_DONE);
+	state.pin_state.row_handles.clear();
+	state.pin_state.heap_handles.clear();
+
+	// early return for empty collection
+	if (segments.empty()) {
+		return 0;
+	}
+
+	idx_t current_chunk = 0;
+	idx_t total_rows = 0;
+	for (idx_t seg_idx = 0; seg_idx < segments.size(); seg_idx++) {
+		auto &segment = segments[seg_idx];
+		idx_t chunk_count = segment->ChunkCount();
+
+		if (current_chunk + chunk_count <= target_chunk) {
+			total_rows += segment->count;
+			current_chunk += chunk_count;
+		} else {
+			idx_t chunk_idx_in_segment = target_chunk - current_chunk;
+			for (idx_t chunk_idx = 0; chunk_idx < chunk_idx_in_segment; chunk_idx++) {
+				total_rows += segment->chunks[chunk_idx]->count;
+			}
+			current_chunk += chunk_count;
+
+			// reset scan state to target segment
+			state.segment_index = seg_idx;
+			state.chunk_index = chunk_idx_in_segment;
+			break;
+		}
+	}
+
+	D_ASSERT(target_chunk < current_chunk);
+	return total_rows;
+}
+
 bool TupleDataCollection::ScanComplete(const TupleDataScanState &state) const {
 	if (Count() == 0) {
 		return true;
@@ -642,14 +732,14 @@ void TupleDataCollection::ScanAtIndex(TupleDataPinState &pin_state, TupleDataChu
                                       const vector<column_t> &column_ids, idx_t segment_index, idx_t chunk_index,
                                       DataChunk &result) {
 	auto &segment = *segments[segment_index];
-	auto &chunk = segment.chunks[chunk_index];
+	const auto &chunk = *segment.chunks[chunk_index];
 	segment.allocator->InitializeChunkState(segment, pin_state, chunk_state, chunk_index, false);
 	result.Reset();
 
 	ResetCachedCastVectors(chunk_state, column_ids);
 	Gather(chunk_state.row_locations, *FlatVector::IncrementalSelectionVector(), chunk.count, column_ids, result,
 	       *FlatVector::IncrementalSelectionVector(), chunk_state.cached_cast_vectors);
-	result.SetCardinality(chunk.count);
+	result.SetChildCardinality(chunk.count);
 }
 
 void TupleDataCollection::ResetCachedCastVectors(TupleDataChunkState &chunk_state, const vector<column_t> &column_ids) {

@@ -5,10 +5,7 @@
 require parquet
 
 statement ok
-pragma enable_logging
-
-statement ok
-set logging_level='DEBUG'
+CALL enable_logging('PhysicalOperator')
 
 # force external so we can see the external log message being added
 statement ok
@@ -25,14 +22,14 @@ copy (
     join range(3_000_000) t2(i)
     using (i)
     order by i
-) to '__TEST_DIR__/physical_operator_logging.parquet'
+) to '{TEST_DIR}/physical_operator_logging.parquet'
 
 # this is for row group read/skip logging
 statement ok
-from '__TEST_DIR__/physical_operator_logging.parquet' where i = 42
+from '{TEST_DIR}/physical_operator_logging.parquet' where i = 42
 
 statement ok
-pragma disable_logging
+CALL disable_logging()
 
 # enabling external hash join happens exactly once
 query I
@@ -46,13 +43,18 @@ select count(*) from duckdb_logs_parsed('PhysicalOperator') where class = 'JoinH
 ----
 16
 
+query I
+select info.total_probe_matches from duckdb_logs_parsed('PhysicalOperator') where class = 'PhysicalHashJoin' and event = 'GetData'
+----
+3000000
+
 # all flushed row groups should be logged, these should be equal
 query I
 select count(*) = (
     select count(distinct row_group_id)
-    from parquet_metadata('__TEST_DIR__/physical_operator_logging.parquet')
+    from parquet_metadata('{TEST_DIR}/physical_operator_logging.parquet')
 )
-from duckdb_logs_parsed('PhysicalOperator') where class = 'ParquetWriter' and event = 'FlushRowGroup'
+from duckdb_logs_parsed('PhysicalOperator') where class = 'PhysicalCopyToFile' and event = 'FlushBatch'
 ----
 1
 

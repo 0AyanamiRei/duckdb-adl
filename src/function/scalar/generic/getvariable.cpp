@@ -23,9 +23,12 @@ struct GetVariableBindData : FunctionData {
 	}
 };
 
-unique_ptr<FunctionData> GetVariableBind(ClientContext &context, ScalarFunction &function,
-                                         vector<unique_ptr<Expression>> &arguments) {
-	if (arguments[0]->HasParameter() || arguments[0]->return_type.id() == LogicalTypeId::UNKNOWN) {
+unique_ptr<FunctionData> GetVariableBind(BindScalarFunctionInput &input) {
+	auto &context = input.GetClientContext();
+	auto &arguments = input.GetArguments();
+	auto &function = input.GetBoundFunction();
+
+	if (arguments[0]->HasParameter() || arguments[0]->GetReturnType().id() == LogicalTypeId::UNKNOWN) {
 		throw ParameterNotResolvedException();
 	}
 	if (!arguments[0]->IsFoldable()) {
@@ -36,7 +39,7 @@ unique_ptr<FunctionData> GetVariableBind(ClientContext &context, ScalarFunction 
 	if (!variable_name.IsNull()) {
 		ClientConfig::GetConfig(context).GetUserVariable(variable_name.ToString(), value);
 	}
-	function.return_type = value.type();
+	function.SetReturnType(value.type());
 	return make_uniq<GetVariableBindData>(std::move(value));
 }
 
@@ -54,7 +57,7 @@ unique_ptr<Expression> BindGetVariableExpression(FunctionBindExpressionInput &in
 
 ScalarFunction GetVariableFun::GetFunction() {
 	ScalarFunction getvar("getvariable", {LogicalType::VARCHAR}, LogicalType::ANY, nullptr, GetVariableBind, nullptr);
-	getvar.bind_expression = BindGetVariableExpression;
+	getvar.SetBindExpressionCallback(BindGetVariableExpression);
 	return getvar;
 }
 

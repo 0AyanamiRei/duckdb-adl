@@ -12,12 +12,14 @@
 #include "duckdb/common/named_parameter_map.hpp"
 #include "duckdb/common/serializer/deserializer.hpp"
 #include "duckdb/common/serializer/serializer.hpp"
+#include "duckdb/main/setting_info.hpp"
 
 namespace duckdb {
 class BaseSecret;
 struct SecretEntry;
 struct FileOpenerInfo;
 struct CreateSecretInfo;
+class FileOpener;
 
 //! Whether a secret is persistent or temporary
 enum class SecretPersistType : uint8_t { DEFAULT, TEMPORARY, PERSISTENT };
@@ -251,7 +253,7 @@ public:
 class KeyValueSecretReader {
 public:
 	//! Manually pass in a secret reference
-	KeyValueSecretReader(const KeyValueSecret &secret_p, FileOpener &opener_p) : secret(secret_p) {};
+	KeyValueSecretReader(const KeyValueSecret &secret_p, FileOpener &opener_p);
 
 	//! Initializes the KeyValueSecretReader by fetching the secret automatically
 	KeyValueSecretReader(FileOpener &opener_p, optional_ptr<FileOpenerInfo> info, const char **secret_types,
@@ -295,7 +297,9 @@ public:
 		Value result;
 		auto lookup_result = TryGetSecretKeyOrSetting(secret_key, setting_name, result);
 		if (lookup_result) {
-			value_out = result.GetValue<TYPE>();
+			if (!result.IsNull()) {
+				value_out = result.GetValue<TYPE>();
+			}
 		}
 		return lookup_result;
 	}

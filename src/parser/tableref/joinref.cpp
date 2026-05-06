@@ -2,13 +2,15 @@
 
 #include "duckdb/common/limits.hpp"
 #include "duckdb/common/serializer/serializer.hpp"
-#include "duckdb/common/serializer/deserializer.hpp"
 
 namespace duckdb {
 
 string JoinRef::ToString() const {
 	string result;
-	result = left->ToString() + " ";
+	if (!is_implicit) {
+		result += "(";
+	}
+	result += left->ToString() + " ";
 	switch (ref_type) {
 	case JoinRefType::REGULAR:
 		result += EnumUtil::ToString(type) + " JOIN ";
@@ -43,8 +45,11 @@ string JoinRef::ToString() const {
 			if (i > 0) {
 				result += ", ";
 			}
-			result += KeywordHelper::WriteOptionallyQuoted(using_columns[i]);
+			result += SQLIdentifier(using_columns[i]);
 		}
+		result += ")";
+	}
+	if (!is_implicit) {
 		result += ")";
 	}
 	return result;

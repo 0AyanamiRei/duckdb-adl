@@ -4,7 +4,6 @@
 #include "duckdb/common/local_file_system.hpp"
 
 using namespace duckdb;
-using namespace std;
 
 static idx_t GetWALFileSize(FileSystem &fs, const string &path) {
 	auto handle = fs.OpenFile(path, FileFlags::FILE_FLAGS_READ);
@@ -118,7 +117,7 @@ static void FlipWALByte(FileSystem &fs, const string &path, idx_t byte_pos) {
 	auto wal_size = handle->GetFileSize();
 	auto wal_contents = duckdb::unique_ptr<data_t[]>(new data_t[wal_size]);
 
-	handle->Read(wal_contents.get(), wal_size, 0);
+	handle->Read(QueryContext(), wal_contents.get(), wal_size, 0);
 	wal_contents[byte_pos]++;
 
 	handle->Write(QueryContext(), wal_contents.get(), wal_size, 0);
