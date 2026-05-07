@@ -24,7 +24,7 @@ Track durable research and implementation debt in `docs/exec-plans/tech-debt-tra
 ## Experiment Protocol
 
 - `docs/design-docs/experiment-scale-and-benchmark-protocol.md`: staged dataset sizes, benchmark rounds, resource budgets, correctness gates, and reporting requirements.
-- `docs/design-docs/ikkbz-linearization-export-usage.md`: R5 debug settings, usage, JSON interpretation, and smoke/boundary tests for IKKBZ linearization export.
+- `docs/design-docs/ikkbz-linearization-export-usage.md`: R5 ADL settings, usage, JSON interpretation, and smoke/boundary tests for IKKBZ linearization export.
 
 ## Collaboration Protocol
 

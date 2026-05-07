@@ -21,6 +21,8 @@ namespace duckdb {
 
 using namespace duckdb_yyjson; // NOLINT
 
+static constexpr double ADL_OPT_INFINITE_RANK = 1e300;
+
 struct ADLOptLinearEdge {
 	idx_t edge_id;
 	idx_t left;
@@ -107,7 +109,9 @@ static string JsonToString(yyjson_mut_doc *doc, yyjson_mut_val *root, bool prett
 	auto json = yyjson_mut_write(doc, flags, &len);
 	if (!json) {
 		yyjson_mut_doc_free(doc);
-		return "{}";
+		// The linearizer is export-only. Serialization failure should surface as metadata instead of failing the
+		// user query whose plan is still owned by DuckDB's optimizer.
+		return "{\"status\":\"export_error\",\"error\":\"json_serialization_failed\"}";
 	}
 	string result(json, len);
 	free(json);
@@ -116,6 +120,8 @@ static string JsonToString(yyjson_mut_doc *doc, yyjson_mut_val *root, bool prett
 }
 
 static string RelationLabel(idx_t relation_id) {
+	// TODO(adl-opt): expose a user-visible SQL alias/table mapping when the external runner starts consuming these
+	// orders. For now rN is the DuckDB join-order relation id internal label.
 	return StringUtil::Format("r%llu", relation_id);
 }
 
@@ -156,7 +162,7 @@ static bool BuildRegularInnerEdges(QueryGraphManager &query_graph_manager, CostM
 		auto left_cardinality = static_cast<double>(relation_stats[left].cardinality);
 		auto right_cardinality = static_cast<double>(relation_stats[right].cardinality);
 		auto denom = left_cardinality * right_cardinality;
-		auto selectivity = denom <= 0 ? 1.0 : pair_cardinality / denom;
+		auto selectivity = denom <= 0 || pair_cardinality <= 0 ? 0.0 : pair_cardinality / denom;
 		if (!std::isfinite(selectivity)) {
 			selectivity = 1.0;
 		}
@@ -167,9 +173,11 @@ static bool BuildRegularInnerEdges(QueryGraphManager &query_graph_manager, CostM
 			selectivity = 1.0;
 		}
 		auto reduction = 1.0 - selectivity;
-		auto rank = reduction <= 0 ? 1e300 : MaxValue<double>(pair_cardinality, 0.0) / reduction;
+		// A selectivity of one does not reduce the input at all. Treat it as an effectively infinite Cout rank so it
+		// sorts after selective edges without introducing infinities into JSON output.
+		auto rank = reduction <= 0 ? ADL_OPT_INFINITE_RANK : MaxValue<double>(pair_cardinality, 0.0) / reduction;
 		if (!std::isfinite(rank)) {
-			rank = 1e300;
+			rank = ADL_OPT_INFINITE_RANK;
 		}
 		ADLOptLinearEdge edge;
 		edge.edge_id = edges.size();
@@ -320,7 +328,7 @@ static void AddRelationsJSON(yyjson_mut_doc *doc, yyjson_mut_val *root, QueryGra
 		auto relation = yyjson_mut_obj(doc);
 		yyjson_mut_obj_add_uint(doc, relation, "relation_id", i);
 		auto label = RelationLabel(i);
-		yyjson_mut_obj_add_strcpy(doc, relation, "debug_label", label.c_str());
+		yyjson_mut_obj_add_strcpy(doc, relation, "internal_label", label.c_str());
 		yyjson_mut_obj_add_uint(doc, relation, "base_cardinality", relation_stats[i].cardinality);
 		yyjson_mut_arr_add_val(relations, relation);
 	}

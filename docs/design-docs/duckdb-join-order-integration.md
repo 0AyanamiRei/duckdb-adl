@@ -24,7 +24,7 @@ R3 之后的 large-join 方向收窄为：
 
 R5 开始补上第一段内核导出能力：
 
-- 新增 `debug_adl_opt_linearize_join_order`、`debug_adl_opt_linearization_output`、`debug_adl_opt_ikkbz_k` 三个 debug setting。
+- 新增 `adl_linearize_join_order`、`adl_linearization_output`、`adl_ikkbz_k` 三个 ADL setting。
 - 在 `InitLeafPlans()` 和 `SolveJoinOrder()` 后、`Reconstruct()` 前生成 ADL-OPT linearization metadata。
 - 只导出，不修改 `PlanEnumerator` 的 `plans`，所以 DuckDB chosen plan 不变。
 - 对 cyclic inner join graph 先按 DuckDB estimated selectivity 构造 MST，再导出 IKKBZ-style root candidates。
@@ -42,7 +42,7 @@ R5 的最短 smoke 命令：
 
 查看结果：
 
-- `EXPLAIN` 输出里找 `adl_opt_join_linearization`。
+- `EXPLAIN` 输出里找 `adl_join_linearization`。
 - 完整 JSON 默认写到 `/tmp/adl-opt-linearization.json`。
 - `status=ok` 表示拿到了 linear order candidates；`skipped_not_large_join` 表示 relation 数小于 12；`unsupported` 表示当前 join graph 不在 R5 支持范围。
 
@@ -91,6 +91,18 @@ v0 之后可以规划一个 experimental large-join bridge：
 - mode：`off`、`export_only`、`apply_if_valid`。
 
 JSON 失败必须 fail closed：记录错误，回退 DuckDB 当前策略，而不是生成不完整计划。
+
+## JSON Writer 选择
+
+R5 内核导出使用 DuckDB 已经 vendored 的 `yyjson`，而不是手写字符串或引入新的 JSON 依赖。
+
+这个选择主要来自三点：
+
+- DuckDB 代码库里已经有多处 `yyjson` 使用，例如 profiling、variant/json 转换和 JSON plan/tree rendering。
+- ADL-OPT 导出对象包含嵌套数组、浮点数、字符串和错误信息，用结构化 JSON API 可以避免手写转义和拼接错误。
+- R5 是 optimizer 内部 export-only 路径，复用现有低层 JSON writer 比引入额外 C++ JSON abstraction 更小、更贴近 DuckDB 当前实现风格。
+
+如果后续 DuckDB 上游提供更统一的内部 JSON builder，可以再把 `ADLOptJoinLinearizer` 的序列化部分迁过去；当前 PR 先保持依赖面最小。
 
 ## v0 Plan-Control 注意点
 

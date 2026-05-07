@@ -36,9 +36,9 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalExplain &op) {
 		values = {op.logical_plan_unopt, logical_plan_opt, op.physical_plan};
 	}
 	auto &client_data = ClientData::Get(context);
-	if (!client_data.debug_adl_opt_join_linearization.empty()) {
-		keys.push_back("adl_opt_join_linearization");
-		values.push_back(client_data.debug_adl_opt_join_linearization);
+	if (!client_data.adl_join_linearization.empty()) {
+		keys.push_back("adl_join_linearization");
+		values.push_back(client_data.adl_join_linearization);
 	}
 
 	// Create a ColumnDataCollection from the output.

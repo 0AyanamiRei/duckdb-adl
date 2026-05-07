@@ -1,6 +1,6 @@
 # 0004 R5 IKKBZ Linearization Export
 
-English TL;DR: Add an export-only DuckDB join-order debug path that emits IKKBZ-style linear orders for large joins without changing the chosen plan.
+English TL;DR: Add an export-only DuckDB join-order path that emits IKKBZ-style linear orders for large joins without changing the chosen plan.
 
 Updated: 2026-05-07
 
@@ -16,7 +16,7 @@ R5 的目标是在 DuckDB 内核 join-order pass 里拿到真实估计信息，�
 - ADL-OPT linearization 只导出 JSON 和 EXPLAIN 摘要，不改 `PlanEnumerator` 的 `plans`。
 - `n < 12` 只标记 `skipped_not_large_join`，不影响 exact DPhyp。
 - cyclic query graph 先用 estimated selectivity 做 MST，再在 MST 上产生 IKKBZ-style root candidates。
-- `debug_adl_opt_ikkbz_k` 只保留 top-k root results；不做 near-MST、扰动或多套 edge weight 策略。
+- `adl_ikkbz_k` 只保留 top-k root results；不做 near-MST、扰动或多套 edge weight 策略。
 
 ## Non-Goals
 
@@ -29,9 +29,9 @@ R5 的目标是在 DuckDB 内核 join-order pass 里拿到真实估计信息，�
 
 | Setting | Type | Default | 含义 |
 | --- | --- | --- | --- |
-| `debug_adl_opt_linearize_join_order` | `BOOLEAN` | `false` | 打开导出逻辑。关闭时不写 JSON，也不在 `EXPLAIN` 中增加 ADL-OPT summary。 |
-| `debug_adl_opt_linearization_output` | `VARCHAR` | `''` | 完整 JSON 输出路径。为空时只保留 `EXPLAIN` summary。 |
-| `debug_adl_opt_ikkbz_k` | `UBIGINT` | `1` | 导出 top-k root candidates。`0` 按 `1` 处理，实际输出为 `min(k, relation_count)`。 |
+| `adl_linearize_join_order` | `BOOLEAN` | `false` | 打开导出逻辑。关闭时不写 JSON，也不在 `EXPLAIN` 中增加 ADL-OPT summary。 |
+| `adl_linearization_output` | `VARCHAR` | `''` | 完整 JSON 输出路径。为空时只保留 `EXPLAIN` summary。 |
+| `adl_ikkbz_k` | `UBIGINT` | `1` | 导出 top-k root candidates。`0` 按 `1` 处理，实际输出为 `min(k, relation_count)`。 |
 
 完整使用说明见 `docs/design-docs/ikkbz-linearization-export-usage.md`。
 
@@ -46,10 +46,10 @@ R5 的目标是在 DuckDB 内核 join-order pass 里拿到真实估计信息，�
 
 查看方式：
 
-- `EXPLAIN` 输出中找 `adl_opt_join_linearization`。
+- `EXPLAIN` 输出中找 `adl_join_linearization`。
 - 完整 JSON 默认写到 `/tmp/adl-opt-linearization.json`。
 - `linear_orders[*].relation_id_order` 是机器可消费的线性 relation id 顺序。
-- `linear_orders[*].relation_label_order` 是给人看的 debug label 顺序，不是 SQL alias。
+- `linear_orders[*].relation_label_order` 是给人看的 internal label 顺序，不是 SQL alias。
 
 ## Implementation Notes
 
@@ -75,9 +75,9 @@ CMAKE_BUILD_PARALLEL_LEVEL=$BUILD_JOBS make reldebug
 
 SQL smoke：
 
-- 默认 setting 下 `EXPLAIN` 不出现 `adl_opt_join_linearization`。
-- 开启 setting 后，12 表 inner join 的 `EXPLAIN` 出现 `adl_opt_join_linearization`。
-- `debug_adl_opt_ikkbz_k=3` 时 JSON 导出 3 个 `linear_orders`。
+- 默认 setting 下 `EXPLAIN` 不出现 `adl_join_linearization`。
+- 开启 setting 后，12 表 inner join 的 `EXPLAIN` 出现 `adl_join_linearization`。
+- `adl_ikkbz_k=3` 时 JSON 导出 3 个 `linear_orders`。
 - cyclic graph 的 MST edge 数量是 `relation_count - 1`。
 - `n < 12` 输出 `skipped_not_large_join`。
 - unsupported query 不影响查询成功执行。

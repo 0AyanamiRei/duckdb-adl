@@ -45,7 +45,7 @@ R5 之后，NeuSO-style endpoint append 的上游输入不再只依赖 Python fi
 
 - cyclic graph 先压成 selectivity MST。
 - 每个 root 产生一个线性候选。
-- `debug_adl_opt_ikkbz_k` 控制导出的 root candidates 数量。
+- `adl_ikkbz_k` 控制导出的 root candidates 数量。
 - 导出的 order 仍然只是后续 ADL-OPT 的输入，不在线上改写 DuckDB plan。
 
 这种 endpoint append 仍保留 NeuSO 的 state-transition 学习视角，但不会声称 NeuSO 直接替代 DuckDB 的 hypergraph DP。

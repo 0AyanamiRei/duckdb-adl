@@ -66,6 +66,7 @@ else()
 endif()
 
 if(UNIX AND NOT APPLE)
+  # Some libstdc++ atomic operations used by existing unit tests require libatomic when linking with clang.
   target_link_libraries(unittest atomic)
 endif()
 

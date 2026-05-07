@@ -1,6 +1,6 @@
 # DuckDB + ADL-OPT Architecture Map
 
-English TL;DR: DuckDB already has a clear optimizer pipeline. ADL-OPT mostly studies join-order decisions offline; R5 adds an export-only C++ debug path for n>=12 IKKBZ linearization metadata.
+English TL;DR: DuckDB already has a clear optimizer pipeline. ADL-OPT mostly studies join-order decisions offline; R5 adds an export-only C++ path for n>=12 IKKBZ linearization metadata.
 
 Updated: 2026-05-07
 
@@ -76,10 +76,10 @@ This keeps the first research loop reproducible while avoiding early C++ optimiz
 
 ## R5 Export-Only Boundary
 
-R5 adds one narrow in-tree debug path near the join-order optimizer:
+R5 adds one narrow in-tree export path near the join-order optimizer:
 
 - It can export IKKBZ-style linear order candidates for `n >= 12` large joins.
-- It is controlled by local debug settings and writes optional JSON metadata.
+- It is controlled by local ADL settings and writes optional JSON metadata.
 - It does not change DuckDB public APIs.
 - It does not replace DuckDB's chosen join plan.
 - It does not support non-inner or non-regular join graph boundaries yet.

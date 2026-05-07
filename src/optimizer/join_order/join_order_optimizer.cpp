@@ -96,14 +96,13 @@ static string ADLOptJsonEscape(const string &input) {
 static void StoreADLOptJoinLinearization(ClientContext &context, ADLOptJoinLinearizationResult result) {
 	auto &client_data = ClientData::Get(context);
 	auto priority = ADLOptJoinLinearizationPriority(result);
-	if (!client_data.debug_adl_opt_join_linearization.empty() &&
-	    priority <= client_data.debug_adl_opt_join_linearization_priority) {
+	if (!client_data.adl_join_linearization.empty() && priority <= client_data.adl_join_linearization_priority) {
 		return;
 	}
-	client_data.debug_adl_opt_join_linearization = result.summary_json;
-	client_data.debug_adl_opt_join_linearization_priority = priority;
+	client_data.adl_join_linearization = result.summary_json;
+	client_data.adl_join_linearization_priority = priority;
 
-	auto output_path = Settings::Get<DebugAdlOptLinearizationOutputSetting>(context);
+	auto output_path = Settings::Get<AdlLinearizationOutputSetting>(context);
 	if (output_path.empty()) {
 		return;
 	}
@@ -115,28 +114,28 @@ static void StoreADLOptJoinLinearization(ClientContext &context, ADLOptJoinLinea
 		writer.Close();
 	} catch (std::exception &ex) {
 		auto escaped_error = ADLOptJsonEscape(ex.what());
-		client_data.debug_adl_opt_join_linearization =
+		client_data.adl_join_linearization =
 		    StringUtil::Format("{\"status\":\"export_error\",\"error\":\"%s\"}", escaped_error);
 	}
 }
 
 static void ExportADLOptJoinLinearization(ClientContext &context, QueryGraphManager &query_graph_manager,
                                           CostModel &cost_model) {
-	if (!Settings::Get<DebugAdlOptLinearizeJoinOrderSetting>(context)) {
+	if (!Settings::Get<AdlLinearizeJoinOrderSetting>(context)) {
 		return;
 	}
-	auto requested_k = Settings::Get<DebugAdlOptIkkbzKSetting>(context);
+	auto requested_k = Settings::Get<AdlIkkbzKSetting>(context);
 	auto result = ADLOptJoinLinearizer::Generate(query_graph_manager, cost_model, requested_k);
 	StoreADLOptJoinLinearization(context, std::move(result));
 }
 
 static void ExportUnsupportedADLOptJoinLinearization(ClientContext &context, QueryGraphManager &query_graph_manager,
                                                      const string &unsupported_reason) {
-	if (!Settings::Get<DebugAdlOptLinearizeJoinOrderSetting>(context) ||
+	if (!Settings::Get<AdlLinearizeJoinOrderSetting>(context) ||
 	    query_graph_manager.relation_manager.NumRelations() == 0) {
 		return;
 	}
-	auto requested_k = Settings::Get<DebugAdlOptIkkbzKSetting>(context);
+	auto requested_k = Settings::Get<AdlIkkbzKSetting>(context);
 	auto result = ADLOptJoinLinearizer::GenerateUnsupported(query_graph_manager, requested_k, unsupported_reason);
 	StoreADLOptJoinLinearization(context, std::move(result));
 }

@@ -11,9 +11,9 @@ CREATE OR REPLACE TABLE t9 AS SELECT i::INTEGER AS i FROM range(100) AS r(i);
 CREATE OR REPLACE TABLE t10 AS SELECT i::INTEGER AS i FROM range(100) AS r(i);
 CREATE OR REPLACE TABLE t11 AS SELECT i::INTEGER AS i FROM range(100) AS r(i);
 
-SET debug_adl_opt_linearize_join_order = true;
-SET debug_adl_opt_linearization_output = '/tmp/adl-opt-linearization.json';
-SET debug_adl_opt_ikkbz_k = 3;
+SET adl_linearize_join_order = true;
+SET adl_linearization_output = '/tmp/adl-opt-linearization.json';
+SET adl_ikkbz_k = 3;
 
 EXPLAIN SELECT count(*)
 FROM t0

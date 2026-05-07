@@ -441,32 +441,32 @@ struct CustomUserAgentSetting {
 	static Value GetSetting(const ClientContext &context);
 };
 
-struct DebugAdlOptIkkbzKSetting {
+struct AdlIkkbzKSetting {
 	using RETURN_TYPE = idx_t;
-	static constexpr const char *Name = "debug_adl_opt_ikkbz_k";
+	static constexpr const char *Name = "adl_ikkbz_k";
 	static constexpr const char *Description =
-	    "DEBUG SETTING: number of IKKBZ root linearization candidates to export for ADL-OPT";
+	    "ADL experimental setting: number of IKKBZ root linearization candidates to export";
 	static constexpr const char *InputType = "UBIGINT";
 	static constexpr const char *DefaultValue = "1";
 	static constexpr SettingScopeTarget Scope = SettingScopeTarget::LOCAL_DEFAULT;
 	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
 };
 
-struct DebugAdlOptLinearizationOutputSetting {
+struct AdlLinearizationOutputSetting {
 	using RETURN_TYPE = string;
-	static constexpr const char *Name = "debug_adl_opt_linearization_output";
-	static constexpr const char *Description = "DEBUG SETTING: path to write ADL-OPT join-order linearization JSON";
+	static constexpr const char *Name = "adl_linearization_output";
+	static constexpr const char *Description = "ADL experimental setting: path to write join-order linearization JSON";
 	static constexpr const char *InputType = "VARCHAR";
 	static constexpr const char *DefaultValue = "";
 	static constexpr SettingScopeTarget Scope = SettingScopeTarget::LOCAL_DEFAULT;
 	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
 };
 
-struct DebugAdlOptLinearizeJoinOrderSetting {
+struct AdlLinearizeJoinOrderSetting {
 	using RETURN_TYPE = bool;
-	static constexpr const char *Name = "debug_adl_opt_linearize_join_order";
+	static constexpr const char *Name = "adl_linearize_join_order";
 	static constexpr const char *Description =
-	    "DEBUG SETTING: export ADL-OPT IKKBZ join-order linearization metadata without changing the plan";
+	    "ADL experimental setting: export IKKBZ join-order linearization metadata without changing the plan";
 	static constexpr const char *InputType = "BOOLEAN";
 	static constexpr const char *DefaultValue = "false";
 	static constexpr SettingScopeTarget Scope = SettingScopeTarget::LOCAL_DEFAULT;

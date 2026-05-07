@@ -24,10 +24,10 @@ This file is intentionally short. Keep durable project knowledge in the linked d
 
 ## Current ADL-OPT Default
 
-The current phase is a research harness plus a narrow debug export path, not a DuckDB behavior change.
+The current phase is a research harness plus a narrow ADL export path, not a DuckDB behavior change.
 
 - Do not modify DuckDB public APIs or C++ optimizer behavior for ADL-OPT v0.
-- R5 may export IKKBZ linearization metadata from C++ debug settings, but it must not apply those orders to DuckDB plans.
+- R5 may export IKKBZ linearization metadata from C++ ADL settings, but it must not apply those orders to DuckDB plans.
 - Use TPC-H small scale for execution smoke tests, preferably SF 0.1 and fallback SF 0.01.
 - Use JOB/IMDB 29/28/33 static artifacts for the n>12 large-join direction.
 - Focus first on offline plan/data collection, connected join-state enumeration, profiling, and JSONL artifacts.

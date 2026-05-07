@@ -4,7 +4,7 @@ English TL;DR: R5 can export IKKBZ-style linear join-order candidates for DuckDB
 
 Updated: 2026-05-07
 
-Key terms: IKKBZ, large join, linearization, debug setting, EXPLAIN, JSON export, selectivity MST
+Key terms: IKKBZ, large join, linearization, ADL setting, EXPLAIN, JSON export, selectivity MST
 
 ## 当前支持程度
 
@@ -14,7 +14,7 @@ R5 现在已经能做的是：
 - 对 `relation_count >= 12` 的 large join 尝试导出线性化结果。这个阈值和 DuckDB 当前从 exact DPhyp 切到 approximate path 的阈值一致。
 - 对 regular inner comparison join graph 构造 estimated selectivity MST，再在 MST 上生成 IKKBZ-style root linear order candidates。
 - 通过 `EXPLAIN` 增加一行紧凑 summary，并且可选写完整 JSON 文件。
-- 通过 `debug_adl_opt_ikkbz_k` 导出 top-k root candidates。
+- 通过 `adl_ikkbz_k` 导出 top-k root candidates。
 
 R5 现在还没有做的是：
 
@@ -23,19 +23,19 @@ R5 现在还没有做的是：
 - 不支持 outer join、ASOF、ANY、MARK、SINGLE 等会形成非重排边界的 join。
 - 不支持 hyper-edge 或无法拆成单表 pair edge 的 join predicate。
 - 不做 near-MST、tie-break perturbation 或多套 edge weight/rank 策略。
-- 不把 `r0`、`r1` 这类 debug relation label 还原成 SQL alias。当前 JSON 里的 label 是 DuckDB join-order 内部 relation id 的稳定调试名，不是用户写的表别名。
+- 不把 `r0`、`r1` 这类 internal relation label 还原成 SQL alias。当前 JSON 里的 label 是 DuckDB join-order 内部 relation id 的稳定调试名，不是用户写的表别名。
 
 ## 参数说明
 
-这些参数都是 debug setting，默认关闭，不属于 DuckDB public API。
+这些参数都是 ADL setting，默认关闭，不属于 DuckDB public API。
 
 | Setting | Type | Default | 作用 |
 | --- | --- | --- | --- |
-| `debug_adl_opt_linearize_join_order` | `BOOLEAN` | `false` | 打开 ADL-OPT IKKBZ 线性化导出逻辑。关闭时不会产生 EXPLAIN summary，也不会写 JSON。 |
-| `debug_adl_opt_linearization_output` | `VARCHAR` | `''` | 完整 JSON 输出路径。为空时只在 `EXPLAIN` 中显示 summary，不写文件。 |
-| `debug_adl_opt_ikkbz_k` | `UBIGINT` | `1` | 请求导出的 root candidate 数量。`0` 会按 `1` 处理；实际输出数量是 `min(k, relation_count)`。 |
+| `adl_linearize_join_order` | `BOOLEAN` | `false` | 打开 ADL-OPT IKKBZ 线性化导出逻辑。关闭时不会产生 EXPLAIN summary，也不会写 JSON。 |
+| `adl_linearization_output` | `VARCHAR` | `''` | 完整 JSON 输出路径。为空时只在 `EXPLAIN` 中显示 summary，不写文件。 |
+| `adl_ikkbz_k` | `UBIGINT` | `1` | 请求导出的 root candidate 数量。`0` 会按 `1` 处理；实际输出数量是 `min(k, relation_count)`。 |
 
-这三个 setting 是 local scope，建议在同一个 DuckDB session 中先 `SET`，再执行目标 `EXPLAIN` 或查询。`debug_adl_opt_linearization_output` 每次写一个完整 JSON 对象，不是 JSONL 追加日志；多次执行同一路径时应把它理解为“当前语句的最新导出结果”。
+这三个 setting 是 local scope，建议在同一个 DuckDB session 中先 `SET`，再执行目标 `EXPLAIN` 或查询。`adl_linearization_output` 每次写一个完整 JSON 对象，不是 JSONL 追加日志；多次执行同一路径时应把它理解为“当前语句的最新导出结果”。
 
 ## 快速使用
 
@@ -55,7 +55,7 @@ CMAKE_BUILD_PARALLEL_LEVEL=$BUILD_JOBS make reldebug
   < scripts/adl_opt/r5_ikkbz_linearization_smoke.sql
 ```
 
-这个脚本会创建 12 张小表，打开 R5 debug settings，执行一个 12-way inner join 的 `EXPLAIN`，并把完整结果写到：
+这个脚本会创建 12 张小表，打开 R5 ADL settings，执行一个 12-way inner join 的 `EXPLAIN`，并把完整结果写到：
 
 ```text
 /tmp/adl-opt-linearization.json
@@ -64,7 +64,7 @@ CMAKE_BUILD_PARALLEL_LEVEL=$BUILD_JOBS make reldebug
 查看 EXPLAIN 里的 summary 时，重点找这一行：
 
 ```text
-adl_opt_join_linearization
+adl_join_linearization
 ```
 
 典型内容长这样：
@@ -87,20 +87,20 @@ jq '[.linear_orders[] | {linear_order_id, order}]' /tmp/adl-opt-linearization.js
 
 ## 实际测试例子
 
-这里用仓库里的 [r5_ikkbz_linearization_smoke.sql](/home/refrain/proj/duckdb-adl/scripts/adl_opt/r5_ikkbz_linearization_smoke.sql) 做例子。这个测试故意很小：每张表只有 100 行，重点不是测性能，而是确认 large-join 线性化导出链路真的跑起来。
+这里用仓库里的 `scripts/adl_opt/r5_ikkbz_linearization_smoke.sql` 做例子。这个测试故意很小：每张表只有 100 行，重点不是测性能，而是确认 large-join 线性化导出链路真的跑起来。
 
 测试 SQL 做了三件事：
 
 1. 创建 `t0` 到 `t11` 共 12 张表。
-2. 打开 R5 三个 debug setting，并请求 `k=3`。
+2. 打开 R5 三个 ADL setting，并请求 `k=3`。
 3. 对一个 12-way chain inner join 执行 `EXPLAIN`。
 
 核心查询如下：
 
 ```sql
-SET debug_adl_opt_linearize_join_order = true;
-SET debug_adl_opt_linearization_output = '/tmp/adl-opt-linearization.json';
-SET debug_adl_opt_ikkbz_k = 3;
+SET adl_linearize_join_order = true;
+SET adl_linearization_output = '/tmp/adl-opt-linearization.json';
+SET adl_ikkbz_k = 3;
 
 EXPLAIN SELECT count(*)
 FROM t0
@@ -135,7 +135,7 @@ rm -f /tmp/adl-opt-linearization.json
 
 - `status=ok`：当前 join graph 在 R5 支持范围内，线性候选导出成功。
 - `relation_count=12`：DuckDB join-order 内部看到 12 个 relation，已经达到 large-join 阈值。
-- `k_emitted=3`：按 `debug_adl_opt_ikkbz_k=3` 输出了 3 条 root candidate。
+- `k_emitted=3`：按 `adl_ikkbz_k=3` 输出了 3 条 root candidate。
 - `selected_order_id=ikkbz_root_0`：导出结果里的 top-1 candidate。它没有被应用到 DuckDB plan。
 
 再从 JSON 文件里提取 ADL-OPT 后续更容易消费的候选列表：
@@ -177,16 +177,16 @@ PY
 ]
 ```
 
-这个列表就是后续 ADL-OPT runner 最应该优先读取的形态。完整 JSON 仍保留 `relation_count`、`large_join_threshold`、`edges[*].mst_edge`、`score`、`estimated_cout_rank_trace` 等调试和验证字段。这个例子里 MST 边数应该是 `relation_count - 1`，说明 selectivity MST 覆盖了所有 relation。`order` 里的 `r0`、`r1` 仍然是 DuckDB 内部 relation debug label，不是 SQL alias，也不是 DuckDB 实际执行时采用的 join tree。
+这个列表就是后续 ADL-OPT runner 最应该优先读取的形态。完整 JSON 仍保留 `relation_count`、`large_join_threshold`、`edges[*].mst_edge`、`score`、`estimated_cout_rank_trace` 等调试和验证字段。这个例子里 MST 边数应该是 `relation_count - 1`，说明 selectivity MST 覆盖了所有 relation。`order` 里的 `r0`、`r1` 仍然是 DuckDB 内部 relation label，不是 SQL alias，也不是 DuckDB 实际执行时采用的 join tree。
 
 ## 手工 SQL 模板
 
 最小使用方式是在目标查询前设置三个参数：
 
 ```sql
-SET debug_adl_opt_linearize_join_order = true;
-SET debug_adl_opt_linearization_output = '/tmp/adl-opt-linearization.json';
-SET debug_adl_opt_ikkbz_k = 3;
+SET adl_linearize_join_order = true;
+SET adl_linearization_output = '/tmp/adl-opt-linearization.json';
+SET adl_ikkbz_k = 3;
 
 EXPLAIN SELECT count(*)
 FROM t0
@@ -213,7 +213,7 @@ JOIN t11 ON t10.i = t11.i;
 - `relation_count`：DuckDB join-order 内部看到的 relation 数量。
 - `large_join_threshold`：当前 large join 阈值，R5 使用 DuckDB 的 `PlanEnumerator::THRESHOLD_TO_SWAP_TO_APPROXIMATE`。
 - `k_requested` / `k_emitted`：请求和实际输出的候选数量。
-- `relations`：内部 relation id、debug label、base cardinality。
+- `relations`：内部 relation id、internal label、base cardinality。
 - `edges`：regular pair join edge。`selectivity` 越小表示估计选择性越强；`mst_edge=true` 表示这条边进入了 selectivity MST；`cout_rank` 是当前 IKKBZ-style 排序使用的 rank metadata。
 - `linear_orders`：top-k root candidates。`linear_order_id` 和 `order` 是推荐给后续 ADL-OPT runner 读取的简洁字段；`relation_id_order`、`relation_label_order`、`score`、`estimated_cout_rank_trace` 是保留给调试和验证的详细字段。
 - `selected_order_id`：top-1 candidate id。它只是导出结果里的推荐项，不会被 DuckDB 应用到 plan。
@@ -249,11 +249,11 @@ python3 -m json.tool /tmp/adl-opt-linearization.json >/tmp/adl-opt-linearization
 
 期望结果：
 
-- 默认关闭 setting 时，同一查询的 `EXPLAIN` 不应该出现 `adl_opt_join_linearization`。
-- 开启 `debug_adl_opt_linearize_join_order=true` 后，12 表 inner join 的 `EXPLAIN` 应该出现 `adl_opt_join_linearization`。
+- 默认关闭 setting 时，同一查询的 `EXPLAIN` 不应该出现 `adl_join_linearization`。
+- 开启 `adl_linearize_join_order=true` 后，12 表 inner join 的 `EXPLAIN` 应该出现 `adl_join_linearization`。
 - smoke JSON 中 `status` 应该是 `ok`。
 - `relation_count` 应该是 `12`。
-- `k_emitted` 在 `debug_adl_opt_ikkbz_k=3` 时应该是 `3`。
+- `k_emitted` 在 `adl_ikkbz_k=3` 时应该是 `3`。
 - `linear_orders[*]` 应该包含 `linear_order_id` 和 `order`。
 - `linear_orders[0].relation_id_order` 长度应该等于 `relation_count`。
 - `edges` 中 `mst_edge=true` 的数量应该是 `relation_count - 1`。
@@ -261,8 +261,8 @@ python3 -m json.tool /tmp/adl-opt-linearization.json >/tmp/adl-opt-linearization
 边界测试：
 
 ```sql
-SET debug_adl_opt_linearize_join_order = true;
-SET debug_adl_opt_linearization_output = '/tmp/adl-opt-linearization-small.json';
+SET adl_linearize_join_order = true;
+SET adl_linearization_output = '/tmp/adl-opt-linearization-small.json';
 
 EXPLAIN SELECT count(*)
 FROM t0
@@ -273,8 +273,8 @@ JOIN t2 ON t1.i = t2.i;
 这个小查询应该导出 `skipped_not_large_join`，因为 relation 数小于 12。
 
 ```sql
-SET debug_adl_opt_linearize_join_order = true;
-SET debug_adl_opt_linearization_output = '/tmp/adl-opt-linearization-left.json';
+SET adl_linearize_join_order = true;
+SET adl_linearization_output = '/tmp/adl-opt-linearization-left.json';
 
 EXPLAIN SELECT count(*)
 FROM t0
@@ -296,6 +296,6 @@ JOIN t11 ON t10.i = t11.i;
 ## 常见误解
 
 - “EXPLAIN 里有 `selected_order_id`”不表示 DuckDB 用了这个 order；它只是导出 metadata。
-- `debug_adl_opt_ikkbz_k=3` 不表示会尝试 3 个物理 plan；它只导出 3 个 root linearization candidates。
+- `adl_ikkbz_k=3` 不表示会尝试 3 个物理 plan；它只导出 3 个 root linearization candidates。
 - cyclic graph 会先抽 selectivity MST 供 IKKBZ 使用，但 JSON 的 `edges` 会保留可见的 regular pair edges，并用 `mst_edge` 标记哪些边进入了 MST。
-- 当前 debug label 不是 SQL alias。后续如果要把导出结果交给外部 harness，需要另做 alias/relation mapping。
+- 当前 internal label 不是 SQL alias。后续如果要把导出结果交给外部 harness，需要另做 alias/relation mapping。

@@ -262,22 +262,22 @@
         ]
     },
     {
-        "name": "debug_adl_opt_ikkbz_k",
-        "description": "DEBUG SETTING: number of IKKBZ root linearization candidates to export for ADL-OPT",
+        "name": "adl_ikkbz_k",
+        "description": "ADL experimental setting: number of IKKBZ root linearization candidates to export",
         "type": "UBIGINT",
         "default_scope": "local",
         "default_value": "1"
     },
     {
-        "name": "debug_adl_opt_linearization_output",
-        "description": "DEBUG SETTING: path to write ADL-OPT join-order linearization JSON",
+        "name": "adl_linearization_output",
+        "description": "ADL experimental setting: path to write join-order linearization JSON",
         "type": "VARCHAR",
         "default_scope": "local",
         "default_value": ""
     },
     {
-        "name": "debug_adl_opt_linearize_join_order",
-        "description": "DEBUG SETTING: export ADL-OPT IKKBZ join-order linearization metadata without changing the plan",
+        "name": "adl_linearize_join_order",
+        "description": "ADL experimental setting: export IKKBZ join-order linearization metadata without changing the plan",
         "type": "BOOLEAN",
         "default_scope": "local",
         "default_value": "false"
