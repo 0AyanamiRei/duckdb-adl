@@ -65,4 +65,8 @@ else()
   link_extension_libraries(unittest "")
 endif()
 
+if(UNIX AND NOT APPLE)
+  target_link_libraries(unittest atomic)
+endif()
+
 duckdb_codesign_for_debugging(unittest)

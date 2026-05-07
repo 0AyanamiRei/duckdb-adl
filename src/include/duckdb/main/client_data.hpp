@@ -56,6 +56,8 @@ public:
 	//! FIXME: this should not be done like this
 	bool debug_set_max_line_length = false;
 	idx_t debug_max_line_length = 0;
+	string debug_adl_opt_join_linearization;
+	idx_t debug_adl_opt_join_linearization_priority = 0;
 
 	//! The writer used to log queries, if logging is enabled.
 	//! DEPRECATED: Now, queries are written to the generic log.

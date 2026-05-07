@@ -1,10 +1,10 @@
 # DuckDB Join-Order Integration Notes
 
-English TL;DR: v0 is offline. Future ADL-OPT integration should target DuckDB's n>12 approximate join-order path, leaving exact DPhyp for n<=12 unchanged.
+English TL;DR: ADL-OPT now has an export-only R5 path for n>=12 IKKBZ linearization metadata; it still does not change DuckDB's chosen join plan.
 
-Updated: 2026-05-06
+Updated: 2026-05-07
 
-Key terms: DuckDB, join order optimizer, PlanEnumerator, QueryGraphManager, large join, JSON exchange
+Key terms: DuckDB, join order optimizer, PlanEnumerator, QueryGraphManager, large join, IKKBZ, JSON exchange
 
 ## 当前接入策略
 
@@ -22,6 +22,32 @@ R3 之后的 large-join 方向收窄为：
 - ADL-OPT 第一版只通过 JSON 文件交换信息，不把模型放进 DuckDB 内核。
 - 线性化算法暂不实现；先用 fixture linear order 验证 endpoint append 决策。
 
+R5 开始补上第一段内核导出能力：
+
+- 新增 `debug_adl_opt_linearize_join_order`、`debug_adl_opt_linearization_output`、`debug_adl_opt_ikkbz_k` 三个 debug setting。
+- 在 `InitLeafPlans()` 和 `SolveJoinOrder()` 后、`Reconstruct()` 前生成 ADL-OPT linearization metadata。
+- 只导出，不修改 `PlanEnumerator` 的 `plans`，所以 DuckDB chosen plan 不变。
+- 对 cyclic inner join graph 先按 DuckDB estimated selectivity 构造 MST，再导出 IKKBZ-style root candidates。
+- 当前 `k-best` 只来自 top-k root result，不做 tie-break perturbation、near-MST 或多 edge weight 策略。
+- 面向使用者的参数、查看结果和测试说明见 `docs/design-docs/ikkbz-linearization-export-usage.md`。
+
+## R5 使用入口
+
+R5 的最短 smoke 命令：
+
+```bash
+./build/reldebug/duckdb /tmp/adl-opt-r5-smoke.duckdb \
+  < scripts/adl_opt/r5_ikkbz_linearization_smoke.sql
+```
+
+查看结果：
+
+- `EXPLAIN` 输出里找 `adl_opt_join_linearization`。
+- 完整 JSON 默认写到 `/tmp/adl-opt-linearization.json`。
+- `status=ok` 表示拿到了 linear order candidates；`skipped_not_large_join` 表示 relation 数小于 12；`unsupported` 表示当前 join graph 不在 R5 支持范围。
+
+这条路径只能回答“DuckDB 内部能否为这个 large join 导出 IKKBZ-style 线性候选”。它不能证明 DuckDB 已经使用这些 order，也不能作为性能加速结论。
+
 ## 相关 DuckDB 文件
 
 - `src/optimizer/optimizer.cpp`：内置 optimizer pass 编排。
@@ -30,6 +56,7 @@ R3 之后的 large-join 方向收窄为：
 - `src/optimizer/join_order/plan_enumerator.cpp`：枚举和求解 join order。
 - `src/optimizer/join_order/cost_model.cpp`：计划代价模型。
 - `src/optimizer/join_order/cardinality_estimator.cpp`：基数估计。
+- `src/optimizer/join_order/adl_opt_join_linearizer.cpp`：R5 export-only IKKBZ/MST linearization metadata。
 - `src/include/duckdb/optimizer/optimizer_extension.hpp`：pre/post optimizer extension API。
 
 ## 为什么 v0 不直接用 Optimizer Extension
@@ -46,14 +73,14 @@ DuckDB optimizer extension 可以在内置 optimizer 之前或之后修改 logic
 
 v0 之后可以规划一个 experimental large-join bridge：
 
-- 从 `QueryGraphManager` 读取 relation ids、aliases、join edges、filters、estimated cardinality 和 cost feature。
+- 从 `QueryGraphManager` 读取 relation ids、join edges、filters、estimated cardinality 和 cost feature。
 - 将 large-join graph 导出为 JSON。
 - 从外部 ADL-OPT JSON 读取 linear order 和 endpoint append path。
 - 只在 `n > 12` approximate path 中尝试使用 ADL-OPT path。
 - 若 JSON 缺失、无效或 relation count 不满足阈值，回退 DuckDB 当前 enumerator。
 - 用 setting 或 build flag 控制启用。
 
-这个方向必须另起执行计划，因为它会改变 DuckDB optimizer 行为。
+这个方向必须另起执行计划，因为它会改变 DuckDB optimizer 行为。R5 已经实现其中的 export-only 前半段；读取外部 decision 并应用 plan 仍然属于后续方向。
 
 ## JSON 交换边界
 
