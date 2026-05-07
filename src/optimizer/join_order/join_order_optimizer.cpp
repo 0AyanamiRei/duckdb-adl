@@ -15,6 +15,15 @@
 
 namespace duckdb {
 
+// The ADL-OPT helpers in this file are intentionally limited to join-order pass glue:
+// they inspect the current optimizer scope, honor local ADL settings, write optional
+// export metadata, and expose a compact EXPLAIN summary through ClientData. The actual
+// IKKBZ/MST linearization lives in ADLOptJoinLinearizer so the algorithm does not leak
+// into DuckDB's native plan enumeration and reconstruction logic.
+
+//! Returns whether this optimizer scope still contains a join-like operator. This lets
+//! R5 emit a structured unsupported result even when QueryGraphManager cannot build a
+//! reorderable graph for the scope.
 static bool ContainsJoinOperator(LogicalOperator &op) {
 	if (op.type == LogicalOperatorType::LOGICAL_COMPARISON_JOIN ||
 	    op.type == LogicalOperatorType::LOGICAL_CROSS_PRODUCT ||
@@ -31,6 +40,9 @@ static bool ContainsJoinOperator(LogicalOperator &op) {
 	return false;
 }
 
+//! Detects join operators outside the R5 regular-inner export contract. DuckDB may still
+//! optimize such queries normally, but ADL-OPT should not label that scope as a supported
+//! IKKBZ regular graph.
 static bool ContainsUnsupportedADLOptJoin(LogicalOperator &op) {
 	if (op.type == LogicalOperatorType::LOGICAL_ASOF_JOIN || op.type == LogicalOperatorType::LOGICAL_ANY_JOIN) {
 		return true;
@@ -50,6 +62,10 @@ static bool ContainsUnsupportedADLOptJoin(LogicalOperator &op) {
 	return false;
 }
 
+//! Chooses which recursive optimizer scope should be visible in the single EXPLAIN
+//! summary slot. An inner large-join OK result is more useful than a wrapper-level skip,
+//! but callers must still treat the summary as one optimizer-scope export, not a complete
+//! whole-statement contract.
 static idx_t ADLOptJoinLinearizationPriority(const ADLOptJoinLinearizationResult &result) {
 	if (result.relation_count <= 1) {
 		return 1;
@@ -93,6 +109,9 @@ static string ADLOptJsonEscape(const string &input) {
 	return result;
 }
 
+//! Stores the ADL-OPT export in the two user-visible channels owned by the join-order
+//! pass: optional full JSON on disk and compact EXPLAIN metadata in ClientData. Export
+//! errors are recorded as metadata because R5 must not fail the DuckDB query plan.
 static void StoreADLOptJoinLinearization(ClientContext &context, ADLOptJoinLinearizationResult result) {
 	auto &client_data = ClientData::Get(context);
 	auto priority = ADLOptJoinLinearizationPriority(result);
@@ -119,6 +138,7 @@ static void StoreADLOptJoinLinearization(ClientContext &context, ADLOptJoinLinea
 	}
 }
 
+//! Runs the supported regular-inner linearizer for the current reorderable join graph.
 static void ExportADLOptJoinLinearization(ClientContext &context, QueryGraphManager &query_graph_manager,
                                           CostModel &cost_model) {
 	if (!Settings::Get<AdlLinearizeJoinOrderSetting>(context)) {
@@ -129,6 +149,9 @@ static void ExportADLOptJoinLinearization(ClientContext &context, QueryGraphMana
 	StoreADLOptJoinLinearization(context, std::move(result));
 }
 
+//! Emits an unsupported export for scopes that contain joins but cannot be represented as
+//! the regular inner graph consumed by the R5 linearizer. This keeps unsupported cases
+//! explicit without changing the normal DuckDB plan.
 static void ExportUnsupportedADLOptJoinLinearization(ClientContext &context, QueryGraphManager &query_graph_manager,
                                                      const string &unsupported_reason) {
 	if (!Settings::Get<AdlLinearizeJoinOrderSetting>(context) ||

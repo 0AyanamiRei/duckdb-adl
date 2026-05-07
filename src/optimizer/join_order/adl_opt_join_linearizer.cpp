@@ -132,6 +132,10 @@ static JoinRelationSet &GetPairRelation(JoinRelationSetManager &set_manager, idx
 	return set_manager.GetJoinRelation(bindings);
 }
 
+//! Converts DuckDB filter bindings into the regular graph consumed by the first R5
+//! linearizer. DuckDB's native join-order graph can represent hyperedges, semi/anti
+//! constraints, and other non-inner cases; R5 intentionally accepts only singleton
+//! pairwise INNER comparison edges so the IKKBZ seed is based on an ordinary graph.
 static bool BuildRegularInnerEdges(QueryGraphManager &query_graph_manager, CostModel &cost_model,
                                    vector<ADLOptLinearEdge> &edges, string &unsupported_reason) {
 	auto relation_count = query_graph_manager.relation_manager.NumRelations();
@@ -194,6 +198,9 @@ static bool BuildRegularInnerEdges(QueryGraphManager &query_graph_manager, CostM
 	return true;
 }
 
+//! Marks a selectivity minimum spanning tree over the regular edge list. The MST is only
+//! the acyclic seed graph required by IKKBZ-style ordering; DuckDB's original query graph
+//! and chosen plan are left untouched.
 static bool MarkMSTEdges(vector<ADLOptLinearEdge> &edges, idx_t relation_count) {
 	vector<idx_t> edge_ids;
 	edge_ids.reserve(edges.size());
@@ -257,6 +264,9 @@ static double EdgeRank(const vector<ADLOptLinearEdge> &edges, idx_t left, idx_t 
 	return 0.0;
 }
 
+//! Emits a deterministic DFS order for a selected MST root. Children are visited by the
+//! Cout-style rank derived from DuckDB cardinality/selectivity estimates, with relation
+//! id as a stable tie-breaker.
 static void EmitRootOrder(const vector<ADLOptLinearEdge> &edges, const vector<vector<idx_t>> &adjacency, idx_t root,
                           idx_t parent, vector<idx_t> &order, vector<double> &rank_trace) {
 	order.push_back(root);
@@ -280,6 +290,9 @@ static void EmitRootOrder(const vector<ADLOptLinearEdge> &edges, const vector<ve
 	}
 }
 
+//! Builds the k-best candidates used by R5 today: run the root-order traversal once from
+//! every relation, score the resulting rank trace, and keep the requested top-k roots.
+//! This is not near-MST or perturbation-based k-best yet.
 static vector<ADLOptLinearOrder> BuildRootOrders(const vector<ADLOptLinearEdge> &edges,
                                                  const vector<vector<idx_t>> &adjacency, idx_t relation_count,
                                                  idx_t requested_k) {
@@ -388,6 +401,9 @@ static string BuildSummary(const string &status, idx_t relation_count, idx_t k_e
 	return JsonToString(doc, root, false);
 }
 
+//! Builds both the full JSON export and the compact EXPLAIN summary. The status tells
+//! consumers whether this optimizer scope produced usable orders, was below the large
+//! join threshold, or was outside the R5 regular-inner contract.
 static ADLOptJoinLinearizationResult BuildResult(QueryGraphManager &query_graph_manager, const string &status,
                                                  idx_t requested_k, const string &unsupported_reason,
                                                  const vector<ADLOptLinearEdge> &edges,
@@ -424,6 +440,9 @@ static ADLOptJoinLinearizationResult BuildResult(QueryGraphManager &query_graph_
 	return result;
 }
 
+//! Public entrypoint used by JoinOrderOptimizer after DuckDB has solved its native plan.
+//! It is export-only: it reads query graph/cardinality metadata and never mutates
+//! PlanEnumerator::plans or the logical plan reconstruction path.
 ADLOptJoinLinearizationResult ADLOptJoinLinearizer::Generate(QueryGraphManager &query_graph_manager,
                                                              CostModel &cost_model, idx_t requested_k) {
 	auto relation_count = query_graph_manager.relation_manager.NumRelations();

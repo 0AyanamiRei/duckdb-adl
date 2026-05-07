@@ -30,6 +30,7 @@ R5 开始补上第一段内核导出能力：
 - 对 cyclic inner join graph 先按 DuckDB estimated selectivity 构造 MST，再导出 IKKBZ-style root candidates。
 - 当前 `k-best` 只来自 top-k root result，不做 tie-break perturbation、near-MST 或多 edge weight 策略。
 - 面向使用者的参数、查看结果和测试说明见 `docs/design-docs/ikkbz-linearization-export-usage.md`。
+- 面向开发者的 DuckDB join-order 源码链路和 R5 插入点说明见 `docs/design-docs/duckdb-join-order-code-path.md`。
 
 ## R5 使用入口
 
