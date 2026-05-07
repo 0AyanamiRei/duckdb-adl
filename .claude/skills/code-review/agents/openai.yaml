@@ -1,0 +1,4 @@
+interface:
+  display_name: "DuckDB ADL Code Review"
+  short_description: "Review DuckDB + ADL-OPT changes"
+  default_prompt: "Use $code-review to review this DuckDB ADL-OPT change for correctness, boundaries, and tests."
