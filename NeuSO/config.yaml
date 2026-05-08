@@ -1,0 +1,54 @@
+
+device: "cuda:2"
+mode: "train" #train or test
+seed: 42
+tb_path: "../tensorboard_log/"
+dataset: 'hprd'
+
+model:
+  consistent_loss: 'add'  # 'add' or 'noadd'
+  query_gnn:
+    model: 'TriAT'  # 'TriAT' or 'GIN' or 'GAT'
+    in_dim: 0     # set in parser_config.py
+    hid_dim: 64
+    out_dim: &query_gnn_out_dim 64
+    head_num: 4
+    pool: 'transformer' # 'transformer' or 'normal'
+  state_cost_model:
+    in_dim: *query_gnn_out_dim
+    hid_dim: 64
+    out_dim: 1
+  state_card_model:
+    in_dim: *query_gnn_out_dim
+    hid_dim: 64
+    out_dim: 1
+  wcoj_cost_model:
+    in_dim: 128  # set to 2*query_gnn_out_dim in parser_config.py
+    hid_dim: 64
+    out_dim: 1
+
+data_loader:
+  shuffle: true
+  query_batch_size: 5
+  topology_emb: true
+  topology_emb_dim: 128
+
+optimizer:
+  lr: 0.002
+  weight_decay: 0.001
+  gamma: 0.8
+  step_size: 20
+  scheduler: 'lr' # 'lr' or 'cyclic'
+
+trainer:
+  epochs: 100
+  save_period: 1
+  train_test_split: 0.8
+  batch_size: 64
+  loss_coeff:
+    cost_coeff: 0.3
+    card_coeff: 0.4
+    wcoj_coeff: 0.3
+
+tester:
+  test_mode: "partial" # "full" or "partial"
