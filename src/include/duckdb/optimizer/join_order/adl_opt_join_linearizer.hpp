@@ -24,8 +24,6 @@ class ADLOptJoinLinearizer {
 public:
 	static ADLOptJoinLinearizationResult Generate(QueryGraphManager &query_graph_manager, CostModel &cost_model,
 	                                              idx_t requested_k);
-	static ADLOptJoinLinearizationResult GenerateUnsupported(QueryGraphManager &query_graph_manager, idx_t requested_k,
-	                                                         const string &unsupported_reason);
 };
 
 } // namespace duckdb

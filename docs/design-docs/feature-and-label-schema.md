@@ -58,7 +58,7 @@ Required fields:
 R5 DuckDB kernel export uses a richer JSON document when `adl_linearization_output` is set:
 
 - `version`: export schema version.
-- `status`: `ok`, `skipped_not_large_join`, `unsupported`, or `export_error` in EXPLAIN summary.
+- `status`: `ok`, `skipped_not_large_join`, `unsupported`, or `export_error` in EXPLAIN summary. `unsupported` means the current reorderable subgraph did not match R5's regular inner pair graph contract.
 - `relation_count`, `large_join_threshold`, `k_requested`, `k_emitted`.
 - `relations`: relation id, internal label, base cardinality.
 - `edges`: relation ids, join type, filter index, estimated pair cardinality, selectivity, Cout rank, MST marker.

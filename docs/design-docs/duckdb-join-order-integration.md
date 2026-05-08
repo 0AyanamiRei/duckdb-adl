@@ -2,7 +2,7 @@
 
 English TL;DR: ADL-OPT now has an export-only R5 path for n>=12 IKKBZ linearization metadata; it still does not change DuckDB's chosen join plan.
 
-Updated: 2026-05-07
+Updated: 2026-05-08
 
 Key terms: DuckDB, join order optimizer, PlanEnumerator, QueryGraphManager, large join, IKKBZ, JSON exchange
 
@@ -28,6 +28,7 @@ R5 开始补上第一段内核导出能力：
 - 在 `InitLeafPlans()` 和 `SolveJoinOrder()` 后、`Reconstruct()` 前生成 ADL-OPT linearization metadata。
 - 只导出，不修改 `PlanEnumerator` 的 `plans`，所以 DuckDB chosen plan 不变。
 - 对 cyclic inner join graph 先按 DuckDB estimated selectivity 构造 MST，再导出 IKKBZ-style root candidates。
+- R5 实验输入收窄为 regular inner pair graph；复杂 join 留给后续 constraint model / hypergraph export，不在当前 PR 里展开支持。
 - 当前 `k-best` 只来自 top-k root result，不做 tie-break perturbation、near-MST 或多 edge weight 策略。
 - 面向使用者的参数、查看结果和测试说明见 `docs/design-docs/ikkbz-linearization-export-usage.md`。
 - 面向开发者的 DuckDB join-order 源码链路和 R5 插入点说明见 `docs/design-docs/duckdb-join-order-code-path.md`。
@@ -45,7 +46,7 @@ R5 的最短 smoke 命令：
 
 - `EXPLAIN` 输出里找 `adl_join_linearization`。
 - 完整 JSON 默认写到 `/tmp/adl-opt-linearization.json`。
-- `status=ok` 表示拿到了 linear order candidates；`skipped_not_large_join` 表示 relation 数小于 12；`unsupported` 表示当前 join graph 不在 R5 支持范围。
+- `status=ok` 表示拿到了 linear order candidates；`skipped_not_large_join` 表示 relation 数小于 12；`unsupported` 表示当前可重排子图没有通过 R5 的 regular inner pair graph guard。
 
 这条路径只能回答“DuckDB 内部能否为这个 large join 导出 IKKBZ-style 线性候选”。它不能证明 DuckDB 已经使用这些 order，也不能作为性能加速结论。
 

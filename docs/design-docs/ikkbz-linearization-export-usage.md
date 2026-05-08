@@ -2,7 +2,7 @@
 
 English TL;DR: R5 can export IKKBZ-style linear join-order candidates for DuckDB large joins, but it is debug/export-only and never changes the chosen DuckDB plan.
 
-Updated: 2026-05-07
+Updated: 2026-05-08
 
 Key terms: IKKBZ, large join, linearization, ADL setting, EXPLAIN, JSON export, selectivity MST
 
@@ -20,10 +20,10 @@ R5 现在还没有做的是：
 
 - 不把 IKKBZ order 应用回 DuckDB plan；DuckDB chosen plan 仍然来自原来的 join-order optimizer。
 - 不读取外部 ADL-OPT 模型或 endpoint-append decision。
-- 不支持 outer join、ASOF、ANY、MARK、SINGLE 等会形成非重排边界的 join。
-- 不支持 hyper-edge 或无法拆成单表 pair edge 的 join predicate。
 - 不做 near-MST、tie-break perturbation 或多套 edge weight/rank 策略。
 - 不把 `r0`、`r1` 这类 internal relation label 还原成 SQL alias。当前 JSON 里的 label 是 DuckDB join-order 内部 relation id 的稳定调试名，不是用户写的表别名。
+
+这轮实验把 SQL 输入约束得很窄：目标 workload 应该是 large regular inner join，并且 join predicate 能拆成单表对单表的 comparison edge。DuckDB 原生 optimizer 当然能处理更多 SQL 形态；R5 只是把其中一类适合 IKKBZ/MST 的子问题导出给 ADL-OPT。outer/semi/anti/ASOF/ANY/MARK/SINGLE、hyper-edge、复杂 correlated subquery 等都不作为当前实验输入，后续如果要支持，需要单独做 constraint model / hypergraph export，而不是在这个 linearizer 里继续补分支。
 
 ## 参数说明
 
@@ -203,13 +203,13 @@ JOIN t10 ON t9.i = t10.i
 JOIN t11 ON t10.i = t11.i;
 ```
 
-不使用 `EXPLAIN` 也会触发 JSON 导出，但你就只能从文件里看结果。调试阶段建议先用 `EXPLAIN`，因为它同时能告诉你这次导出是 `ok`、`skipped_not_large_join` 还是 `unsupported`。
+不使用 `EXPLAIN` 也会触发 JSON 导出，但你就只能从文件里看结果。调试阶段建议先用 `EXPLAIN`，因为它能直接告诉你这次导出是 `ok`、`skipped_not_large_join`，还是被 regular-inner guard 标成 `unsupported`。
 
 ## JSON 怎么读
 
 完整 JSON 的核心字段：
 
-- `status`：导出状态。`ok` 表示拿到了可用 linear order；`skipped_not_large_join` 表示 relation 数小于 12；`unsupported` 表示当前 join graph 不在 R5 支持范围；`export_error` 只会出现在 EXPLAIN summary 中，表示文件写出失败。
+- `status`：导出状态。`ok` 表示拿到了可用 linear order；`skipped_not_large_join` 表示 relation 数小于 12；`unsupported` 表示当前可重排子图没有通过 R5 的 regular inner pair graph guard；`export_error` 只会出现在 EXPLAIN summary 中，表示文件写出失败。
 - `relation_count`：DuckDB join-order 内部看到的 relation 数量。
 - `large_join_threshold`：当前 large join 阈值，R5 使用 DuckDB 的 `PlanEnumerator::THRESHOLD_TO_SWAP_TO_APPROXIMATE`。
 - `k_requested` / `k_emitted`：请求和实际输出的候选数量。
@@ -272,26 +272,7 @@ JOIN t2 ON t1.i = t2.i;
 
 这个小查询应该导出 `skipped_not_large_join`，因为 relation 数小于 12。
 
-```sql
-SET adl_linearize_join_order = true;
-SET adl_linearization_output = '/tmp/adl-opt-linearization-left.json';
-
-EXPLAIN SELECT count(*)
-FROM t0
-LEFT JOIN t1 ON t0.i = t1.i
-JOIN t2 ON t1.i = t2.i
-JOIN t3 ON t2.i = t3.i
-JOIN t4 ON t3.i = t4.i
-JOIN t5 ON t4.i = t5.i
-JOIN t6 ON t5.i = t6.i
-JOIN t7 ON t6.i = t7.i
-JOIN t8 ON t7.i = t8.i
-JOIN t9 ON t8.i = t9.i
-JOIN t10 ON t9.i = t10.i
-JOIN t11 ON t10.i = t11.i;
-```
-
-这个查询应该导出 `unsupported`，`unsupported_reason` 通常是 `non_inner_join`。查询本身仍应正常完成，因为 R5 不接管执行计划。
+复杂 join 不再作为 R5 smoke 的验收对象。比如 LEFT JOIN、ASOF、MARK/SINGLE 或 hyper-edge 查询，DuckDB 查询本身仍按原生 optimizer 执行；R5 只在当前 join-order 子图能被看成 regular inner pair graph 时导出结果。实验 workload 应该从 SQL 侧避开这些形态。
 
 ## 常见误解
 
@@ -299,3 +280,4 @@ JOIN t11 ON t10.i = t11.i;
 - `adl_ikkbz_k=3` 不表示会尝试 3 个物理 plan；它只导出 3 个 root linearization candidates。
 - cyclic graph 会先抽 selectivity MST 供 IKKBZ 使用，但 JSON 的 `edges` 会保留可见的 regular pair edges，并用 `mst_edge` 标记哪些边进入了 MST。
 - 当前 internal label 不是 SQL alias。后续如果要把导出结果交给外部 harness，需要另做 alias/relation mapping。
+- R5 不是 DuckDB 复杂 join 的通用 legality checker。复杂 join 支持要走单独的 constraint model / hypergraph export 设计。

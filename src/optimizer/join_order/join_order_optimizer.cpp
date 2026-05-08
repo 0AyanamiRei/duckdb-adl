@@ -1,6 +1,5 @@
 #include "duckdb/optimizer/join_order/join_order_optimizer.hpp"
 
-#include "duckdb/common/enums/join_type.hpp"
 #include "duckdb/common/limits.hpp"
 #include "duckdb/common/pair.hpp"
 #include "duckdb/common/serializer/buffered_file_writer.hpp"
@@ -16,51 +15,10 @@
 namespace duckdb {
 
 // The ADL-OPT helpers in this file are intentionally limited to join-order pass glue:
-// they inspect the current optimizer scope, honor local ADL settings, write optional
-// export metadata, and expose a compact EXPLAIN summary through ClientData. The actual
+// they honor local ADL settings, write optional export metadata, and expose a compact
+// EXPLAIN summary through ClientData. The actual regular-inner-only
 // IKKBZ/MST linearization lives in ADLOptJoinLinearizer so the algorithm does not leak
 // into DuckDB's native plan enumeration and reconstruction logic.
-
-//! Returns whether this optimizer scope still contains a join-like operator. This lets
-//! R5 emit a structured unsupported result even when QueryGraphManager cannot build a
-//! reorderable graph for the scope.
-static bool ContainsJoinOperator(LogicalOperator &op) {
-	if (op.type == LogicalOperatorType::LOGICAL_COMPARISON_JOIN ||
-	    op.type == LogicalOperatorType::LOGICAL_CROSS_PRODUCT ||
-	    op.type == LogicalOperatorType::LOGICAL_ASOF_JOIN ||
-	    op.type == LogicalOperatorType::LOGICAL_ANY_JOIN ||
-	    op.type == LogicalOperatorType::LOGICAL_DELIM_JOIN) {
-		return true;
-	}
-	for (auto &child : op.children) {
-		if (ContainsJoinOperator(*child)) {
-			return true;
-		}
-	}
-	return false;
-}
-
-//! Detects join operators outside the R5 regular-inner export contract. DuckDB may still
-//! optimize such queries normally, but ADL-OPT should not label that scope as a supported
-//! IKKBZ regular graph.
-static bool ContainsUnsupportedADLOptJoin(LogicalOperator &op) {
-	if (op.type == LogicalOperatorType::LOGICAL_ASOF_JOIN || op.type == LogicalOperatorType::LOGICAL_ANY_JOIN) {
-		return true;
-	}
-	if (op.type == LogicalOperatorType::LOGICAL_COMPARISON_JOIN ||
-	    op.type == LogicalOperatorType::LOGICAL_DELIM_JOIN) {
-		auto &join = op.Cast<LogicalComparisonJoin>();
-		if (join.join_type != JoinType::INNER) {
-			return true;
-		}
-	}
-	for (auto &child : op.children) {
-		if (ContainsUnsupportedADLOptJoin(*child)) {
-			return true;
-		}
-	}
-	return false;
-}
 
 //! Chooses which recursive optimizer scope should be visible in the single EXPLAIN
 //! summary slot. An inner large-join OK result is more useful than a wrapper-level skip,
@@ -149,20 +107,6 @@ static void ExportADLOptJoinLinearization(ClientContext &context, QueryGraphMana
 	StoreADLOptJoinLinearization(context, std::move(result));
 }
 
-//! Emits an unsupported export for scopes that contain joins but cannot be represented as
-//! the regular inner graph consumed by the R5 linearizer. This keeps unsupported cases
-//! explicit without changing the normal DuckDB plan.
-static void ExportUnsupportedADLOptJoinLinearization(ClientContext &context, QueryGraphManager &query_graph_manager,
-                                                     const string &unsupported_reason) {
-	if (!Settings::Get<AdlLinearizeJoinOrderSetting>(context) ||
-	    query_graph_manager.relation_manager.NumRelations() == 0) {
-		return;
-	}
-	auto requested_k = Settings::Get<AdlIkkbzKSetting>(context);
-	auto result = ADLOptJoinLinearizer::GenerateUnsupported(query_graph_manager, requested_k, unsupported_reason);
-	StoreADLOptJoinLinearization(context, std::move(result));
-}
-
 JoinOrderOptimizer::JoinOrderOptimizer(ClientContext &context)
     : context(context), query_graph_manager(context), depth(1) {
 }
@@ -187,8 +131,6 @@ unique_ptr<LogicalOperator> JoinOrderOptimizer::Optimize(unique_ptr<LogicalOpera
 
 	// make sure query graph manager has not extracted a relation graph already
 	LogicalOperator *op = plan.get();
-	auto contains_join_operator = ContainsJoinOperator(*op);
-	auto contains_unsupported_adl_opt_join = ContainsUnsupportedADLOptJoin(*op);
 
 	// extract the relations that go into the hyper graph.
 	// We optimize the children of any non-reorderable operations we come across.
@@ -209,22 +151,13 @@ unique_ptr<LogicalOperator> JoinOrderOptimizer::Optimize(unique_ptr<LogicalOpera
 		// Initialize the leaf/single node plans
 		plan_enumerator.InitLeafPlans();
 		plan_enumerator.SolveJoinOrder();
-		if (contains_unsupported_adl_opt_join) {
-			ExportUnsupportedADLOptJoinLinearization(context, query_graph_manager, "non_inner_join");
-		} else {
-			ExportADLOptJoinLinearization(context, query_graph_manager, cost_model);
-		}
+		ExportADLOptJoinLinearization(context, query_graph_manager, cost_model);
 		// now reconstruct a logical plan from the query graph plan
 		query_graph_manager.plans = &plan_enumerator.GetPlans();
 
 		new_logical_plan = query_graph_manager.Reconstruct(std::move(plan));
 	} else {
 		new_logical_plan = std::move(plan);
-		if (contains_join_operator) {
-			auto unsupported_reason =
-			    contains_unsupported_adl_opt_join ? "non_inner_join" : "not_reorderable_join_graph";
-			ExportUnsupportedADLOptJoinLinearization(context, query_graph_manager, unsupported_reason);
-		}
 		if (relation_stats.size() == 1) {
 			new_logical_plan->estimated_cardinality = relation_stats.at(0).cardinality;
 			new_logical_plan->has_estimated_cardinality = true;

@@ -59,9 +59,6 @@ void Optimizer::RunBuiltInOptimizers() {
 ```C++
 unique_ptr<LogicalOperator> JoinOrderOptimizer::Optimize(unique_ptr<LogicalOperator> plan,
                                                          optional_ptr<RelationStats> stats) {
-    auto contains_join_operator = ContainsJoinOperator(*op);
-    auto contains_unsupported_adl_opt_join = ContainsUnsupportedADLOptJoin(*op);
-    
     // extract the relations that go into the hyper graph.
     // We optimize the children of any non-reorderable operations we come across.
     bool reorderable = query_graph_manager.Build(*this, *op);
@@ -71,18 +68,9 @@ unique_ptr<LogicalOperator> JoinOrderOptimizer::Optimize(unique_ptr<LogicalOpera
     
     if (reorderable) {
         ...
-        if (contains_unsupported_adl_opt_join) {
-            ExportUnsupportedADLOptJoinLinearization(context, query_graph_manager, "non_inner_join");
-        } else {
-            ExportADLOptJoinLinearization(context, query_graph_manager, cost_model);
-        }
+        ExportADLOptJoinLinearization(context, query_graph_manager, cost_model);
     } else {
         new_logical_plan = std::move(plan);
-        if (contains_join_operator) {
-            auto unsupported_reason =
-                contains_unsupported_adl_opt_join ? "non_inner_join" : "not_reorderable_join_graph";
-            ExportUnsupportedADLOptJoinLinearization(context, query_graph_manager, unsupported_reason);
-        }
         ...
     }
 }
@@ -115,13 +103,6 @@ unique_ptr<LogicalOperator> JoinOrderOptimizer::Optimize(unique_ptr<LogicalOpera
 
 `RelationManager::ExtractJoinRelations()` 会沿着 logical plan 递归寻找可重排关系。普通 inner comparison join、cross product 等可以进入当前 join graph；不可重排的边界会触发 child optimizer。
 
-典型不可重排边界包括：
-
-- `LEFT` / `RIGHT` / `FULL` 等 outer join。
-- `ASOF`、`ANY`。
-- `MARK`、`SINGLE`、部分 dependent / delim join 场景。
-- 无法安全拆成当前 join graph 的 operator。
-
 遇到这些边界时，DuckDB 不会把整个 operator 当作普通 inner join graph 重排。它会分别优化 child，然后把这个 non-reorderable operator 作为当前层的一个 relation 参与外层处理。这也是 R5 export scope 问题的根源之一。
 
 可以把它理解成“把不能拆开的东西包成一个黑盒”。比如考虑下面这个sql：
@@ -140,8 +121,9 @@ JOIN d ON c.k = d.k
 
 - base filter 通常只影响 cardinality 估计。
 - regular pair comparison join 可以形成普通 join edge。
-- semi / anti join 会保留额外约束，避免把 RHS relation 错误移动到会丢失 column binding 的位置。
-- hyper-edge 或复杂 residual predicate 可能无法被 R5 的 IKKBZ linearizer 当成 regular pair edge 消费。
+- 更复杂的 join legality 和 hyperedge 信息仍然属于 DuckDB 原生 optimizer 的职责。
+
+R5 不在这里实现一套通用 join legality model。它只消费 regular inner singleton-pair edge；无法投影成这个形态的子图会被 `ADLOptJoinLinearizer` 里的集中 guard 标成 `unsupported`。当前实验从 SQL workload 侧约束输入，后续若要覆盖复杂 join，需要单独设计 constraint model / hypergraph export。
 
 ## PlanEnumerator 做什么
 
@@ -208,6 +190,7 @@ R5 不做这些事：
 - 不修改 `plans`。
 - 不把 `linear_orders` 应用回 `QueryGraphManager::Reconstruct()`。
 - 不读取外部 ADL-OPT model 或 endpoint append decision。
+- 不在 join-order pass 外层扫描整条 logical plan 来判断各种特殊 join 类型。
 
 ## Settings、ClientData 和 EXPLAIN 数据流
 
@@ -268,7 +251,7 @@ review R5 或后续 ADL-OPT join-order 改动时，优先守住这些点：
 - 默认关闭 setting 时，不应该产生 ADL-OPT JSON 或 `EXPLAIN` 行。
 - export-only 代码不应该修改 `PlanEnumerator::plans`。
 - DuckDB chosen plan 应继续由 `QueryGraphManager::Reconstruct()` 读取原生 `plans` 生成。
-- unsupported / non-inner boundary 不能被伪装成完整 regular inner graph。
+- R5 的支持范围应保持 regular inner pair graph；复杂 join 不应被伪装成完整 regular graph。
 - 如果导出的是 child subproblem，文档或后续 schema 必须让 consumer 看得出 scope。
 - `EXPLAIN` metadata 必须按 query 清理，不能泄漏到无关 statement。
 - 文件写出失败应表现为 structured metadata，不应阻断查询执行。
@@ -278,5 +261,5 @@ review R5 或后续 ADL-OPT join-order 改动时，优先守住这些点：
 - 默认关闭：同一个 12-way inner join 的 `EXPLAIN` 不出现 `adl_join_linearization`。
 - 开启导出：12-way regular inner join 输出 `status=ok`。
 - 小查询：`n < 12` 输出 `skipped_not_large_join`。
-- 边界查询：non-inner boundary 不应被当成完整 regular graph。
-- 递归子问题：outer wrapper + inner large subtree 的导出 scope 需要被显式表达。
+- 复杂 join：作为 workload 输入约束记录，不作为 R5 smoke 的主要验收对象。
+- 递归子问题：后续若外部 consumer 读取 JSON，需要显式表达 export scope。

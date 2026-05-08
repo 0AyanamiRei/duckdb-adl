@@ -132,10 +132,10 @@ static JoinRelationSet &GetPairRelation(JoinRelationSetManager &set_manager, idx
 	return set_manager.GetJoinRelation(bindings);
 }
 
-//! Converts DuckDB filter bindings into the regular graph consumed by the first R5
-//! linearizer. DuckDB's native join-order graph can represent hyperedges, semi/anti
-//! constraints, and other non-inner cases; R5 intentionally accepts only singleton
-//! pairwise INNER comparison edges so the IKKBZ seed is based on an ordinary graph.
+//! Converts DuckDB filter bindings into the only graph shape R5 consumes today:
+//! pairwise INNER edges between singleton relation sets. More general DuckDB
+//! hypergraph/constraint handling is future ADL-OPT work, not part of this toy
+//! IKKBZ export path.
 static bool BuildRegularInnerEdges(QueryGraphManager &query_graph_manager, CostModel &cost_model,
                                    vector<ADLOptLinearEdge> &edges, string &unsupported_reason) {
 	auto relation_count = query_graph_manager.relation_manager.NumRelations();
@@ -403,7 +403,7 @@ static string BuildSummary(const string &status, idx_t relation_count, idx_t k_e
 
 //! Builds both the full JSON export and the compact EXPLAIN summary. The status tells
 //! consumers whether this optimizer scope produced usable orders, was below the large
-//! join threshold, or was outside the R5 regular-inner contract.
+//! join threshold, or failed the concentrated regular-inner guard above.
 static ADLOptJoinLinearizationResult BuildResult(QueryGraphManager &query_graph_manager, const string &status,
                                                  idx_t requested_k, const string &unsupported_reason,
                                                  const vector<ADLOptLinearEdge> &edges,
@@ -466,15 +466,6 @@ ADLOptJoinLinearizationResult ADLOptJoinLinearizer::Generate(QueryGraphManager &
 	auto emit_k = MinValue<idx_t>(requested_k, relation_count);
 	auto orders = BuildRootOrders(edges, adjacency, relation_count, emit_k);
 	return BuildResult(query_graph_manager, "ok", requested_k, "", edges, orders);
-}
-
-ADLOptJoinLinearizationResult ADLOptJoinLinearizer::GenerateUnsupported(QueryGraphManager &query_graph_manager,
-                                                                        idx_t requested_k,
-                                                                        const string &unsupported_reason) {
-	if (requested_k == 0) {
-		requested_k = 1;
-	}
-	return BuildResult(query_graph_manager, "unsupported", requested_k, unsupported_reason, {}, {});
 }
 
 } // namespace duckdb
