@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "request_id": "fixture_chain_12",
+  "graph_hash": "4b82e82cde6a9e97",
+  "status": "ok",
+  "model_version": "neuso_contract_smoke",
+  "join_order": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11
+  ]
+}

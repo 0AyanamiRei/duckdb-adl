@@ -49,6 +49,20 @@ python3 scripts/adl_opt/offline_tpch_harness.py \
   --timeout 120
 ```
 
+NeuSO runtime bridge file-driven regression, no DuckDB binary required:
+
+```bash
+PYTHONPATH=NeuSO .venv/bin/python scripts/adl_opt/neuso_runtime_bridge_smoke.py \
+  --mode regression \
+  --testdata-dir scripts/adl_opt/testdata/neuso_runtime_bridge \
+  --device cpu
+```
+
+Regression cases store the readable SQL scenario, NeuSO runtime request JSON,
+and stable expected response under `scripts/adl_opt/testdata/neuso_runtime_bridge/`.
+The runner compares normalized responses and deliberately ignores nondeterministic
+latency fields.
+
 The execute path assumes the TPC-H extension is available to the binary. If data is not present, the script tries:
 
 ```sql
