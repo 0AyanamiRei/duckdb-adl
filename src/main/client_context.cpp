@@ -423,6 +423,8 @@ shared_ptr<PreparedStatementData> ClientContext::CreatePreparedStatementInternal
                                                                                  PendingQueryParameters parameters) {
 	StatementType statement_type = statement->type;
 	auto result = make_shared_ptr<PreparedStatementData>(statement_type);
+	client_data->adl_join_linearization.clear();
+	client_data->adl_join_linearization_priority = 0;
 
 	auto &profiler = QueryProfiler::Get(*this);
 	profiler.StartQuery(query, IsExplainAnalyze(statement.get()));

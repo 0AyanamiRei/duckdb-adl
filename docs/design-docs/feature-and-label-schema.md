@@ -1,10 +1,10 @@
 # Feature and Label Schema
 
-English TL;DR: ADL-OPT v0 standardizes JSONL artifacts before training models, so experiments can be replayed and compared.
+English TL;DR: ADL-OPT standardizes JSONL experiment artifacts and the R5 JSON export shape for IKKBZ large-join linearization.
 
-Updated: 2026-05-06
+Updated: 2026-05-07
 
-Key terms: JSONL, query graph, state, transition, decision, run result, feature, label
+Key terms: JSONL, query graph, state, transition, decision, run result, IKKBZ, feature, label
 
 ## 文件约定
 
@@ -54,6 +54,18 @@ Required fields:
 - `updated`: string.
 
 第一版 fixture 不是 Neumann-style 线性化算法，只用于验证 JSON 接口和 endpoint append 决策。
+
+R5 DuckDB kernel export uses a richer JSON document when `adl_linearization_output` is set:
+
+- `version`: export schema version.
+- `status`: `ok`, `skipped_not_large_join`, `unsupported`, or `export_error` in EXPLAIN summary. `unsupported` means the current reorderable subgraph did not match R5's regular inner pair graph contract.
+- `relation_count`, `large_join_threshold`, `k_requested`, `k_emitted`.
+- `relations`: relation id, internal label, base cardinality.
+- `edges`: relation ids, join type, filter index, estimated pair cardinality, selectivity, Cout rank, MST marker.
+- `linear_orders`: top-k root candidates. Each row includes compact consumer fields `linear_order_id` and `order`, plus detailed metadata such as relation id order, root relation id, score, and rank trace.
+- `selected_order_id`: top-1 candidate id; it is not applied to the DuckDB plan.
+
+Detailed usage and validation checks live in `docs/design-docs/ikkbz-linearization-export-usage.md`.
 
 ## `state.jsonl`
 

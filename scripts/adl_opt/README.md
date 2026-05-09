@@ -1,10 +1,10 @@
 # ADL-OPT Offline Harness
 
-English TL;DR: Local runners for ADL-OPT TPC-H execution smoke tests and n>12 JOB/IMDB large-join static artifacts.
+English TL;DR: Local runners and smoke scripts for ADL-OPT TPC-H, JOB/IMDB, and R5 IKKBZ linearization export checks.
 
-Updated: 2026-05-06
+Updated: 2026-05-07
 
-Key terms: ADL-OPT, offline runner, TPC-H, JOB/IMDB, large join, JSONL
+Key terms: ADL-OPT, offline runner, TPC-H, JOB/IMDB, large join, IKKBZ, JSONL
 
 ## Usage
 
@@ -31,6 +31,17 @@ BUILD_JOBS=$(( CPU_COUNT * 75 / 100 ))
 [ "$BUILD_JOBS" -lt 1 ] && BUILD_JOBS=1
 CMAKE_BUILD_PARALLEL_LEVEL=$BUILD_JOBS BUILD_TPCH=1 make reldebug
 ```
+
+R5 DuckDB kernel IKKBZ linearization export smoke:
+
+```bash
+./build/reldebug/duckdb /tmp/adl-opt-r5-smoke.duckdb \
+  < scripts/adl_opt/r5_ikkbz_linearization_smoke.sql
+
+python3 -m json.tool /tmp/adl-opt-linearization.json | less
+```
+
+The R5 settings, JSON fields, and test expectations are documented in `docs/design-docs/ikkbz-linearization-export-usage.md`.
 
 R1 executable smoke with a DuckDB CLI/binary available:
 
@@ -74,4 +85,4 @@ The schema is documented in `docs/design-docs/feature-and-label-schema.md`.
 
 `run_result.jsonl` stores latency samples, P50/P95 latency, row count, order-independent checksum, `EXPLAIN` hash, and optional profiling-derived optimizer/execution times.
 
-The large-join runner is static today. It parses JOB/IMDB SQL, emits relation graphs for n>12 queries, writes a fixture linear order, and records endpoint-append decisions. It deliberately does not implement the real large-join linearization algorithm yet.
+The large-join Python runner is still static. R5 adds a separate DuckDB kernel export-only path that can write IKKBZ-style linearization candidates for real large-join plans, but it still does not apply those candidates to DuckDB's chosen plan.

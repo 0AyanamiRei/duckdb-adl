@@ -2,7 +2,7 @@
 
 English TL;DR: Start here. This file is the short map for agents working in this DuckDB checkout and the ADL-OPT research harness.
 
-Updated: 2026-05-06
+Updated: 2026-05-07
 
 Key terms: DuckDB, ADL-OPT, query optimizer, join order, harness, TPC-H
 
@@ -13,6 +13,7 @@ This file is intentionally short. Keep durable project knowledge in the linked d
 - DuckDB source architecture: `ARCHITECTURE.md`
 - ADL-OPT research spec: `docs/product-specs/adl-opt-research-spec.md`
 - ADL-OPT design notes: `docs/design-docs/`
+- R5 IKKBZ linearization export usage: `docs/design-docs/ikkbz-linearization-export-usage.md`
 - Active execution plans: `docs/exec-plans/active/`
 - Completed execution plans: `docs/exec-plans/completed/`
 - Generated maps and experiment artifacts: `docs/generated/`
@@ -23,9 +24,10 @@ This file is intentionally short. Keep durable project knowledge in the linked d
 
 ## Current ADL-OPT Default
 
-The current phase is a research harness, not a DuckDB behavior change.
+The current phase is a research harness plus a narrow ADL export path, not a DuckDB behavior change.
 
 - Do not modify DuckDB public APIs or C++ optimizer behavior for ADL-OPT v0.
+- R5 may export IKKBZ linearization metadata from C++ ADL settings, but it must not apply those orders to DuckDB plans.
 - Use TPC-H small scale for execution smoke tests, preferably SF 0.1 and fallback SF 0.01.
 - Use JOB/IMDB 29/28/33 static artifacts for the n>12 large-join direction.
 - Focus first on offline plan/data collection, connected join-state enumeration, profiling, and JSONL artifacts.
@@ -74,6 +76,12 @@ Generate static ADL-OPT n>12 JOB/IMDB artifacts:
 
 ```bash
 python3 scripts/adl_opt/offline_large_join_harness.py --output /tmp/adl-opt-large-static
+```
+
+Run R5 IKKBZ linearization export smoke:
+
+```bash
+./build/reldebug/duckdb /tmp/adl-opt-r5-smoke.duckdb < scripts/adl_opt/r5_ikkbz_linearization_smoke.sql
 ```
 
 ## DuckDB Navigation

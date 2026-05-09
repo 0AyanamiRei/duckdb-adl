@@ -1,8 +1,8 @@
 # DuckDB + ADL-OPT Architecture Map
 
-English TL;DR: DuckDB already has a clear optimizer pipeline. ADL-OPT v0 stays outside the C++ execution path and studies join-order decisions through offline plan enumeration and profiling.
+English TL;DR: DuckDB already has a clear optimizer pipeline. ADL-OPT mostly studies join-order decisions offline; R5 adds an export-only C++ path for n>=12 IKKBZ linearization metadata.
 
-Updated: 2026-05-06
+Updated: 2026-05-07
 
 Key terms: parser, binder, logical plan, optimizer, join-order optimizer, physical plan, profiling, CCG
 
@@ -73,6 +73,18 @@ ADL-OPT v0 does not change DuckDB public APIs or optimizer behavior. It creates 
 6. Write JSONL artifacts for later model training and analysis.
 
 This keeps the first research loop reproducible while avoiding early C++ optimizer risk.
+
+## R5 Export-Only Boundary
+
+R5 adds one narrow in-tree export path near the join-order optimizer:
+
+- It can export IKKBZ-style linear order candidates for `n >= 12` large joins.
+- It is controlled by local ADL settings and writes optional JSON metadata.
+- It does not change DuckDB public APIs.
+- It does not replace DuckDB's chosen join plan.
+- It does not support non-inner or non-regular join graph boundaries yet.
+
+Usage details are in `docs/design-docs/ikkbz-linearization-export-usage.md`.
 
 ## Future Integration Boundary
 
