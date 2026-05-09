@@ -35,7 +35,8 @@ SQL
   -> JoinOrderOptimizer
   -> QueryGraphManager 抽取可重排 join-order 子图
   -> CostModel / CardinalityEstimator 准备估计特征
-  -> DuckDB 构造 NeuSO request
+  -> ADLOptJoinLinearizer 生成 base linear order candidates
+  -> DuckDB 构造 NeuSO request，携带 join graph + base linear order
   -> 已启动的 NeuSO sidecar 或 native runtime 推理
   -> NeuSO 返回 linear join_order
   -> DuckDB 校验 response
@@ -88,6 +89,13 @@ DuckDB 给 NeuSO 的 request 应该表达“当前 join-order 子问题”，而
       "selectivity": 0.00017,
       "estimated_join_cost": 105000
     }
+  ],
+  "base_linear_order": [0, 1, 2, 3],
+  "candidate_linear_orders": [
+    {
+      "linear_order_id": "ikkbz_root_0",
+      "relation_id_order": [0, 1, 2, 3]
+    }
   ]
 }
 ```
@@ -104,6 +112,8 @@ DuckDB 给 NeuSO 的 request 应该表达“当前 join-order 子问题”，而
 - `edges[*].estimated_pair_cardinality`：两端 relation join 后的估计 cardinality。
 - `edges[*].selectivity`：由 pair cardinality 和两端 cardinality 推导的估计选择率。
 - `edges[*].estimated_join_cost`：如果 DuckDB 侧能便宜计算，应作为可选特征提供。
+- `base_linear_order`：PR5 线性化导出的首个 relation-id order，作为 NeuSO 在线优化的上游 base order。
+- `candidate_linear_orders[*].relation_id_order`：PR5 可导出的候选 order；第一版 runtime bridge 至少提供首个候选。
 
 这些字段是在线推理特征，不是监督标签。它们来自 DuckDB 优化阶段已有的统计、基数估计和代价估计。
 
@@ -279,7 +289,7 @@ scripts/adl_opt/testdata/neuso_runtime_bridge/chain_12/
 - `input.sql`：实际喂给 DuckDB CLI 的 workload SQL。runner 会先通过 DuckDB CLI `-cmd` 设置 `adl_neuso_sidecar_*`，再设置 `adl_neuso_runtime_enabled=true` 触发 sidecar 预启动；`input.sql` 执行到 join-order optimization 阶段时只负责发送运行时 request 给 NeuSO。
 - `expected_response.json`：从 DuckDB 侧 sidecar trace 中取出的 response 标准答案，只包含稳定字段，例如 `status`、`model_version`、`join_order`。`request_id`、`graph_hash`、`latency_ms` 这类动态字段不参与 regression 精确比较。
 
-初始 `chain_12` case 表示 12 张表按 `t0.i = t1.i = ... = t11.i` 形成的 regular inner chain join。DuckDB 实际 runtime request 会写入输出目录中的 `duckdb_runtime_trace.json`，其中包含 relation、edge、cardinality、selectivity 和 cost feature。期望 response 是：
+初始 `chain_12` case 表示 12 张表按 `t0.i = t1.i = ... = t11.i` 形成的 regular inner chain join。DuckDB 实际 runtime request 会写入输出目录中的 `duckdb_runtime_trace.json`，其中包含 relation、edge、cardinality、selectivity、cost feature，以及由 `ADLOptJoinLinearizer` 生成的 `base_linear_order` / `candidate_linear_orders`。期望 response 是：
 
 ```json
 {
@@ -355,6 +365,7 @@ regression runner 会校验：
 - `relation_id` 唯一。
 - `graph_hash` 与 `relations` / `edges` 重新计算结果一致。
 - 所有 edge 都引用已知 relation。
+- 如果 request 包含 `base_linear_order` / `candidate_linear_orders`，它们必须是完整 relation-id permutation。
 - NeuSO adapter 能从 relation id 和 edge 构造 query graph。
 - actual response 包含 `version`、`request_id`、`graph_hash`、`status`、`model_version`、`join_order` 和 `latency_ms`。
 - normalized response 去掉 `request_id`、`graph_hash`、`latency_ms` 后与 `expected_response.json` 精确一致。

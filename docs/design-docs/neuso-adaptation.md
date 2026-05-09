@@ -2,7 +2,7 @@
 
 English TL;DR: ADL-OPT borrows NeuSO's state-transition view for linearized large joins, while DuckDB's exact DPhyp remains the trusted path for n<=12 joins.
 
-Updated: 2026-05-06
+Updated: 2026-05-07
 
 Key terms: NeuSO, CCG, cardinality-cost graph, large join, linear order, endpoint append
 
@@ -40,6 +40,13 @@ ADL-OPT 在 DuckDB 上复用这个抽象时要加一个重要边界：DuckDB 原
 - `n > 12`：DuckDB 当前进入 approximate greedy pair merge，ADL-OPT 只研究这一段是否能更好。
 - 线性化算法本身暂不实现，单独 issue 讨论。
 - 第一版只接受一个已有 linear order，然后研究从当前连续区间的左端点或右端点追加 relation。
+
+R5 之后，NeuSO-style endpoint append 的上游输入不再只依赖 Python fixture。DuckDB 内核可以在 large join 上导出一组 IKKBZ-style linear order candidates：
+
+- cyclic graph 先压成 selectivity MST。
+- 每个 root 产生一个线性候选。
+- `adl_ikkbz_k` 控制导出的 root candidates 数量。
+- 导出的 order 仍然只是后续 ADL-OPT 的输入，不在线上改写 DuckDB plan。
 
 这种 endpoint append 仍保留 NeuSO 的 state-transition 学习视角，但不会声称 NeuSO 直接替代 DuckDB 的 hypergraph DP。
 

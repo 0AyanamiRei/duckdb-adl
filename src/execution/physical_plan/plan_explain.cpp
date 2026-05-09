@@ -3,6 +3,7 @@
 #include "duckdb/execution/operator/helper/physical_explain_analyze.hpp"
 #include "duckdb/execution/operator/scan/physical_column_data_scan.hpp"
 #include "duckdb/execution/physical_plan_generator.hpp"
+#include "duckdb/main/client_data.hpp"
 #include "duckdb/planner/operator/logical_explain.hpp"
 #include "duckdb/main/settings.hpp"
 
@@ -33,6 +34,11 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalExplain &op) {
 	default:
 		keys = {"logical_plan", "logical_opt", "physical_plan"};
 		values = {op.logical_plan_unopt, logical_plan_opt, op.physical_plan};
+	}
+	auto &client_data = ClientData::Get(context);
+	if (!client_data.adl_join_linearization.empty()) {
+		keys.push_back("adl_join_linearization");
+		values.push_back(client_data.adl_join_linearization);
 	}
 
 	// Create a ColumnDataCollection from the output.

@@ -300,6 +300,27 @@
         ]
     },
     {
+        "name": "adl_ikkbz_k",
+        "description": "ADL experimental setting: number of IKKBZ root linearization candidates to export",
+        "type": "UBIGINT",
+        "default_scope": "local",
+        "default_value": "1"
+    },
+    {
+        "name": "adl_linearization_output",
+        "description": "ADL experimental setting: path to write join-order linearization JSON",
+        "type": "VARCHAR",
+        "default_scope": "local",
+        "default_value": ""
+    },
+    {
+        "name": "adl_linearize_join_order",
+        "description": "ADL experimental setting: export IKKBZ join-order linearization metadata without changing the plan",
+        "type": "BOOLEAN",
+        "default_scope": "local",
+        "default_value": "false"
+    },
+    {
         "name": "debug_asof_iejoin",
         "description": "DEBUG SETTING: force use of IEJoin to implement AsOf joins",
         "type": "BOOLEAN",

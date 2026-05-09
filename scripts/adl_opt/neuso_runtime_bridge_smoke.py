@@ -163,6 +163,8 @@ def build_duckdb_runtime_cmds(sidecar_command: Path | None, host: str, port: int
         f"SET adl_neuso_sidecar_host = {sql_string_literal(host)};",
         f"SET adl_neuso_sidecar_port = {port};",
         "SET adl_neuso_sidecar_timeout_ms = 10000;",
+        "SET adl_linearize_join_order = true;",
+        "SET adl_ikkbz_k = 1;",
         "SET adl_neuso_runtime_enabled = true;",
     ]
 
@@ -367,6 +369,14 @@ def validate_request(request: dict[str, Any]) -> None:
             raise SmokeError(f"Request edge references an unknown relation: {left}, {right}")
     if not edges and relation_count > 1:
         raise SmokeError("Request has more than one relation but no join edges")
+    if "base_linear_order" in request:
+        base_order = [int(item) for item in request["base_linear_order"]]
+        if len(base_order) != relation_count or set(base_order) != relation_id_set:
+            raise SmokeError("Request base_linear_order is not a full relation-id permutation")
+    for candidate in request.get("candidate_linear_orders", []):
+        candidate_order = [int(item) for item in candidate["relation_id_order"]]
+        if len(candidate_order) != relation_count or set(candidate_order) != relation_id_set:
+            raise SmokeError("Request candidate_linear_orders entry is not a full relation-id permutation")
 
 
 class ZeroStateCost:

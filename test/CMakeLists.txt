@@ -65,4 +65,9 @@ else()
   link_extension_libraries(unittest "")
 endif()
 
+if(UNIX AND NOT APPLE)
+  # Some libstdc++ atomic operations used by existing unit tests require libatomic when linking with clang.
+  target_link_libraries(unittest atomic)
+endif()
+
 duckdb_codesign_for_debugging(unittest)

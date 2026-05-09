@@ -89,6 +89,15 @@ static string JSONString(const string &input) {
 	return "\"" + JSONEscape(input) + "\"";
 }
 
+static string JSONIndexArray(const vector<idx_t> &items) {
+	vector<string> rows;
+	rows.reserve(items.size());
+	for (auto item : items) {
+		rows.push_back(to_string(item));
+	}
+	return "[" + StringUtil::Join(rows, ",") + "]";
+}
+
 static string ShortSha256(const string &input) {
 	auto hash = duckdb_mbedtls::MbedTlsWrapper::ComputeSha256Hash(input);
 	char hash_hex[duckdb_mbedtls::MbedTlsWrapper::SHA256_HASH_LENGTH_TEXT];
@@ -307,7 +316,8 @@ static string BuildGraphHashPayload(idx_t relation_count, vector<GraphHashEdge> 
 	return payload;
 }
 
-static NeuSORequest BuildRequestJSON(QueryGraphManager &query_graph_manager, CostModel &cost_model) {
+static NeuSORequest BuildRequestJSON(QueryGraphManager &query_graph_manager, CostModel &cost_model,
+                                     const vector<vector<idx_t>> &linear_orders) {
 	auto relation_count = query_graph_manager.relation_manager.NumRelations();
 	auto relation_stats = query_graph_manager.relation_manager.GetRelationStats();
 	vector<idx_t> degree(relation_count, 0);
@@ -374,6 +384,15 @@ static NeuSORequest BuildRequestJSON(QueryGraphManager &query_graph_manager, Cos
 		relation += "}";
 		relation_rows.push_back(std::move(relation));
 	}
+	vector<string> linear_order_rows;
+	linear_order_rows.reserve(linear_orders.size());
+	for (idx_t linear_order_id = 0; linear_order_id < linear_orders.size(); linear_order_id++) {
+		string linear_order = "{";
+		linear_order += "\"linear_order_id\":" + JSONString("ikkbz_root_" + to_string(linear_order_id));
+		linear_order += ",\"relation_id_order\":" + JSONIndexArray(linear_orders[linear_order_id]);
+		linear_order += "}";
+		linear_order_rows.push_back(std::move(linear_order));
+	}
 
 	auto request_id = "duckdb_neuso_" + to_string(reinterpret_cast<uintptr_t>(&query_graph_manager));
 	auto graph_hash = ShortSha256(BuildGraphHashPayload(relation_count, graph_hash_edges));
@@ -389,6 +408,10 @@ static NeuSORequest BuildRequestJSON(QueryGraphManager &query_graph_manager, Cos
 	request += "}";
 	request += ",\"relations\":[" + StringUtil::Join(relation_rows, ",") + "]";
 	request += ",\"edges\":[" + StringUtil::Join(edge_rows, ",") + "]";
+	if (!linear_orders.empty()) {
+		request += ",\"base_linear_order\":" + JSONIndexArray(linear_orders[0]);
+		request += ",\"candidate_linear_orders\":[" + StringUtil::Join(linear_order_rows, ",") + "]";
+	}
 	request += "}";
 	return {std::move(request), std::move(request_id), std::move(graph_hash)};
 }
@@ -505,8 +528,9 @@ static void ValidateResponse(const string &response_body, QueryGraphManager &que
 	ValidateJoinOrder(query_graph_manager, join_order);
 }
 
-static void InvokeSidecar(QueryGraphManager &query_graph_manager, CostModel &cost_model, const NeuSOConfig &config) {
-	auto request = BuildRequestJSON(query_graph_manager, cost_model);
+static void InvokeSidecar(QueryGraphManager &query_graph_manager, CostModel &cost_model, const NeuSOConfig &config,
+                          const vector<vector<idx_t>> &linear_orders) {
+	auto request = BuildRequestJSON(query_graph_manager, cost_model, linear_orders);
 	duckdb_httplib::Client client(HTTPBaseURL(config));
 	ConfigureClient(client, config.timeout_ms);
 	duckdb_httplib::Headers headers = {{"Content-Type", "application/json"}};
@@ -533,7 +557,8 @@ void NeuSORuntimeBridge::EnsureStarted(DBConfig &db_config) {
 	GetSidecarProcess().EnsureStarted(config);
 }
 
-void NeuSORuntimeBridge::InvokeIfEnabled(QueryGraphManager &query_graph_manager, CostModel &cost_model) {
+void NeuSORuntimeBridge::InvokeIfEnabled(QueryGraphManager &query_graph_manager, CostModel &cost_model,
+                                         const vector<vector<idx_t>> &linear_orders) {
 	auto config = GetConfig(query_graph_manager.context);
 	if (!config.enabled) {
 		return;
@@ -546,7 +571,7 @@ void NeuSORuntimeBridge::InvokeIfEnabled(QueryGraphManager &query_graph_manager,
 	if (!sidecar_process.IsStartedFor(config)) {
 		sidecar_process.EnsureStarted(config);
 	}
-	InvokeSidecar(query_graph_manager, cost_model, config);
+	InvokeSidecar(query_graph_manager, cost_model, config, linear_orders);
 }
 
 } // namespace duckdb

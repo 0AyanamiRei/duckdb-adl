@@ -2,7 +2,7 @@
 
 English TL;DR: This is the index of ADL-OPT execution plans. Active plans are live work; completed plans record what actually happened.
 
-Updated: 2026-05-06
+Updated: 2026-05-07
 
 Key terms: execution plan, active plan, completed plan, tech debt, harness
 
@@ -11,6 +11,7 @@ Key terms: execution plan, active plan, completed plan, tech debt, harness
 - `docs/exec-plans/active/0001-adl-opt-harness-bootstrap.md`: bootstrap the documentation and offline experiment harness specification.
 - `docs/exec-plans/active/0002-r1-tpch-execution-loop.md`: implement the SF0.01 TPC-H R1 executable loop, including data reuse, fixed join-order execution, correctness checks, latency/profile collection, and summary reporting.
 - `docs/exec-plans/active/0003-large-join-endpoint-harness.md`: narrow ADL-OPT to n>12 large joins and add a static JOB/IMDB endpoint-append harness.
+- `docs/exec-plans/active/0004-r5-ikkbz-linearization-export.md`: add DuckDB kernel export-only IKKBZ/MST large-join linearization metadata.
 
 ## Completed
 
@@ -23,6 +24,7 @@ Track durable research and implementation debt in `docs/exec-plans/tech-debt-tra
 ## Experiment Protocol
 
 - `docs/design-docs/experiment-scale-and-benchmark-protocol.md`: staged dataset sizes, benchmark rounds, resource budgets, correctness gates, and reporting requirements.
+- `docs/design-docs/ikkbz-linearization-export-usage.md`: R5 ADL settings, usage, JSON interpretation, and smoke/boundary tests for IKKBZ linearization export.
 
 ## Collaboration Protocol
 
