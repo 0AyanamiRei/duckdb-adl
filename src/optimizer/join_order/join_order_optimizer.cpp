@@ -4,6 +4,7 @@
 #include "duckdb/common/limits.hpp"
 #include "duckdb/common/pair.hpp"
 #include "duckdb/optimizer/join_order/cost_model.hpp"
+#include "duckdb/optimizer/join_order/neuso_runtime_bridge.hpp"
 #include "duckdb/optimizer/join_order/plan_enumerator.hpp"
 #include "duckdb/planner/expression/list.hpp"
 #include "duckdb/planner/operator/list.hpp"
@@ -54,6 +55,7 @@ unique_ptr<LogicalOperator> JoinOrderOptimizer::Optimize(unique_ptr<LogicalOpera
 
 		// Initialize the leaf/single node plans
 		plan_enumerator.InitLeafPlans();
+		NeuSORuntimeBridge::InvokeIfEnabled(query_graph_manager, cost_model);
 		plan_enumerator.SolveJoinOrder();
 		// now reconstruct a logical plan from the query graph plan
 		query_graph_manager.plans = &plan_enumerator.GetPlans();

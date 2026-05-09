@@ -112,6 +112,61 @@ struct AccessModeSetting {
 	static Value GetSetting(const ClientContext &context);
 };
 
+struct AdlNeusoRuntimeEnabledSetting {
+	using RETURN_TYPE = bool;
+	static constexpr const char *Name = "adl_neuso_runtime_enabled";
+	static constexpr const char *Description =
+	    "ADL-OPT: enable and pre-start the experimental NeuSO runtime sidecar bridge for join order optimization";
+	static constexpr const char *InputType = "BOOLEAN";
+	static constexpr const char *DefaultValue = "false";
+	static constexpr SettingScopeTarget Scope = SettingScopeTarget::LOCAL_DEFAULT;
+	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
+	static void OnSet(SettingCallbackInfo &info, Value &input);
+};
+
+struct AdlNeusoSidecarCommandSetting {
+	using RETURN_TYPE = string;
+	static constexpr const char *Name = "adl_neuso_sidecar_command";
+	static constexpr const char *Description =
+	    "ADL-OPT: shell command used to start the experimental NeuSO runtime sidecar";
+	static constexpr const char *InputType = "VARCHAR";
+	static constexpr const char *DefaultValue =
+	    "PYTHONPATH=NeuSO .venv/bin/python scripts/adl_opt/neuso_runtime_sidecar.py";
+	static constexpr SettingScopeTarget Scope = SettingScopeTarget::LOCAL_DEFAULT;
+	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
+};
+
+struct AdlNeusoSidecarHostSetting {
+	using RETURN_TYPE = string;
+	static constexpr const char *Name = "adl_neuso_sidecar_host";
+	static constexpr const char *Description = "ADL-OPT: host for the experimental NeuSO runtime sidecar";
+	static constexpr const char *InputType = "VARCHAR";
+	static constexpr const char *DefaultValue = "127.0.0.1";
+	static constexpr SettingScopeTarget Scope = SettingScopeTarget::LOCAL_DEFAULT;
+	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
+};
+
+struct AdlNeusoSidecarPortSetting {
+	using RETURN_TYPE = idx_t;
+	static constexpr const char *Name = "adl_neuso_sidecar_port";
+	static constexpr const char *Description = "ADL-OPT: port for the experimental NeuSO runtime sidecar";
+	static constexpr const char *InputType = "UBIGINT";
+	static constexpr const char *DefaultValue = "8765";
+	static constexpr SettingScopeTarget Scope = SettingScopeTarget::LOCAL_DEFAULT;
+	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
+};
+
+struct AdlNeusoSidecarTimeoutMsSetting {
+	using RETURN_TYPE = idx_t;
+	static constexpr const char *Name = "adl_neuso_sidecar_timeout_ms";
+	static constexpr const char *Description =
+	    "ADL-OPT: timeout in milliseconds for the experimental NeuSO runtime sidecar";
+	static constexpr const char *InputType = "UBIGINT";
+	static constexpr const char *DefaultValue = "2000";
+	static constexpr SettingScopeTarget Scope = SettingScopeTarget::LOCAL_DEFAULT;
+	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
+};
+
 struct AllocatorBackgroundThreadsSetting {
 	using RETURN_TYPE = bool;
 	static constexpr const char *Name = "allocator_background_threads";

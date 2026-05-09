@@ -16,6 +16,44 @@
         ]
     },
     {
+        "name": "adl_neuso_runtime_enabled",
+        "description": "ADL-OPT: enable and pre-start the experimental NeuSO runtime sidecar bridge for join order optimization",
+        "type": "BOOLEAN",
+        "default_scope": "local",
+        "default_value": "false",
+        "on_callbacks": [
+            "set"
+        ]
+    },
+    {
+        "name": "adl_neuso_sidecar_command",
+        "description": "ADL-OPT: shell command used to start the experimental NeuSO runtime sidecar",
+        "type": "VARCHAR",
+        "default_scope": "local",
+        "default_value": "PYTHONPATH=NeuSO .venv/bin/python scripts/adl_opt/neuso_runtime_sidecar.py"
+    },
+    {
+        "name": "adl_neuso_sidecar_host",
+        "description": "ADL-OPT: host for the experimental NeuSO runtime sidecar",
+        "type": "VARCHAR",
+        "default_scope": "local",
+        "default_value": "127.0.0.1"
+    },
+    {
+        "name": "adl_neuso_sidecar_port",
+        "description": "ADL-OPT: port for the experimental NeuSO runtime sidecar",
+        "type": "UBIGINT",
+        "default_scope": "local",
+        "default_value": "8765"
+    },
+    {
+        "name": "adl_neuso_sidecar_timeout_ms",
+        "description": "ADL-OPT: timeout in milliseconds for the experimental NeuSO runtime sidecar",
+        "type": "UBIGINT",
+        "default_scope": "local",
+        "default_value": "2000"
+    },
+    {
         "name": "allocator_background_threads",
         "description": "Whether to enable the allocator background thread.",
         "type": "BOOLEAN",

@@ -49,19 +49,40 @@ python3 scripts/adl_opt/offline_tpch_harness.py \
   --timeout 120
 ```
 
-NeuSO runtime bridge file-driven regression, no DuckDB binary required:
+NeuSO runtime bridge file-driven regression:
 
 ```bash
 PYTHONPATH=NeuSO .venv/bin/python scripts/adl_opt/neuso_runtime_bridge_smoke.py \
   --mode regression \
+  --duckdb build/reldebug/duckdb \
   --testdata-dir scripts/adl_opt/testdata/neuso_runtime_bridge \
   --device cpu
 ```
 
-Regression cases store the readable SQL scenario, NeuSO runtime request JSON,
-and stable expected response under `scripts/adl_opt/testdata/neuso_runtime_bridge/`.
-The runner compares normalized responses and deliberately ignores nondeterministic
-latency fields.
+Regression cases store the SQL scenario and stable expected sidecar response
+under `scripts/adl_opt/testdata/neuso_runtime_bridge/`. The runner configures
+the sidecar through DuckDB CLI `-cmd`, enables `adl_neuso_runtime_enabled` to
+pre-start it, executes the workload SQL through DuckDB, reads the sidecar trace,
+compares normalized responses, and deliberately ignores dynamic request id,
+graph hash, and latency fields.
+
+NeuSO runtime bridge SQL-to-DuckDB sidecar smoke:
+
+```bash
+PYTHONPATH=NeuSO .venv/bin/python scripts/adl_opt/neuso_runtime_bridge_smoke.py \
+  --mode duckdb-runtime \
+  --duckdb build/reldebug/duckdb \
+  --database /tmp/neuso-runtime-smoke.duckdb \
+  --output /tmp/neuso-runtime-smoke
+```
+
+This path lets DuckDB auto-manage the Python sidecar. The runner pre-starts the
+sidecar by setting `adl_neuso_runtime_enabled=true` through CLI `-cmd` before the
+workload SQL reaches the optimizer; join-order optimization then sends and
+validates the NeuSO request/response. It does not apply the returned order to
+the final plan yet. The runner writes `duckdb_runtime_trace.json` under the
+output directory so the actual DuckDB request and sidecar response can be
+reviewed.
 
 The execute path assumes the TPC-H extension is available to the binary. If data is not present, the script tries:
 

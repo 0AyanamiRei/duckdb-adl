@@ -26,8 +26,6 @@ MODEL_VERSION = "neuso_contract_smoke"
 DEFAULT_TESTDATA_DIR = Path("scripts/adl_opt/testdata/neuso_runtime_bridge")
 STABLE_RESPONSE_FIELDS = [
     "version",
-    "request_id",
-    "graph_hash",
     "status",
     "model_version",
     "join_order",
@@ -49,7 +47,6 @@ class NeuSODependencies:
 class RegressionCase:
     case_dir: Path
     sql: str
-    request: dict[str, Any]
     expected_response: dict[str, Any]
 
 
@@ -147,6 +144,45 @@ def build_duckdb_smoke_sql(export_path: Path) -> str:
     return "\n".join(statements) + "\n"
 
 
+def build_sidecar_command(sidecar_command: Path | None, device: str, trace_file: Path | None) -> str:
+    script = "scripts/adl_opt/neuso_runtime_sidecar.py" if sidecar_command is None else str(sidecar_command)
+    command = f"PYTHONPATH=NeuSO .venv/bin/python {script} --device {device}"
+    if trace_file is not None:
+        command += f" --trace-file {trace_file}"
+    return command
+
+
+def sql_string_literal(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def build_duckdb_runtime_cmds(sidecar_command: Path | None, host: str, port: int, device: str, trace_file: Path) -> list[str]:
+    command = build_sidecar_command(sidecar_command, device, trace_file)
+    return [
+        f"SET adl_neuso_sidecar_command = {sql_string_literal(command)};",
+        f"SET adl_neuso_sidecar_host = {sql_string_literal(host)};",
+        f"SET adl_neuso_sidecar_port = {port};",
+        "SET adl_neuso_sidecar_timeout_ms = 10000;",
+        "SET adl_neuso_runtime_enabled = true;",
+    ]
+
+
+def build_duckdb_runtime_sql(sql: str | None) -> str:
+    statements = []
+    if sql is None:
+        for idx in range(12):
+            statements.append(
+                f"CREATE OR REPLACE TABLE t{idx} AS SELECT i::INTEGER AS i FROM range(100) AS r(i);"
+            )
+        joins = ["FROM t0"]
+        for idx in range(1, 12):
+            joins.append(f"JOIN t{idx} ON t{idx - 1}.i = t{idx}.i")
+        statements.append("SELECT count(*)\n" + "\n".join(joins) + ";")
+    else:
+        statements.append(sql)
+    return "\n".join(statements) + "\n"
+
+
 def run_duckdb_export(duckdb: Path, database: Path, output_dir: Path) -> dict[str, Any]:
     if not duckdb.exists():
         raise SmokeError(f"DuckDB binary does not exist: {duckdb}")
@@ -187,6 +223,58 @@ def run_duckdb_export(duckdb: Path, database: Path, output_dir: Path) -> dict[st
             return json.load(handle)
     except json.JSONDecodeError as exc:
         raise SmokeError(f"DuckDB export is not valid JSON: {export_path}") from exc
+
+
+def run_duckdb_runtime(
+    duckdb: Path,
+    database: Path,
+    sql: str | None,
+    sidecar_command: Path | None,
+    host: str,
+    port: int,
+    device: str,
+    trace_file: Path,
+    expected_stdout_fragment: str | None = None,
+) -> tuple[str, dict[str, Any]]:
+    if not duckdb.exists():
+        raise SmokeError(f"DuckDB binary does not exist: {duckdb}")
+    if trace_file.exists():
+        trace_file.unlink()
+    runtime_sql = build_duckdb_runtime_sql(sql)
+    cmd_args = []
+    for command in build_duckdb_runtime_cmds(sidecar_command, host, port, device, trace_file):
+        cmd_args.extend(["-cmd", command])
+    proc = subprocess.run(
+        [str(duckdb), str(database), *cmd_args],
+        input=runtime_sql,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=180,
+        check=False,
+    )
+    combined_output = (proc.stdout or "") + "\n" + (proc.stderr or "")
+    if proc.returncode != 0:
+        raise SmokeError(f"DuckDB NeuSO runtime smoke failed with exit code {proc.returncode}:\n{combined_output}")
+    if expected_stdout_fragment is not None and expected_stdout_fragment not in proc.stdout:
+        raise SmokeError(
+            f"DuckDB NeuSO runtime smoke did not return expected output fragment "
+            f"{expected_stdout_fragment!r}:\n{combined_output}"
+        )
+    if not trace_file.exists():
+        raise SmokeError(f"DuckDB NeuSO runtime smoke did not write sidecar trace: {trace_file}")
+    try:
+        with trace_file.open() as handle:
+            trace = json.load(handle)
+    except json.JSONDecodeError as exc:
+        raise SmokeError(f"DuckDB NeuSO runtime trace is not valid JSON: {trace_file}") from exc
+    request = trace.get("request")
+    response = trace.get("response")
+    if not isinstance(request, dict) or not isinstance(response, dict):
+        raise SmokeError(f"DuckDB NeuSO runtime trace must contain request and response objects: {trace_file}")
+    validate_request(request)
+    validate_response(request, response)
+    return combined_output, trace
 
 
 def adapt_duckdb_export(export: dict[str, Any]) -> dict[str, Any]:
@@ -457,6 +545,9 @@ def write_regression_outputs(
         return
     case_output_dir = output_dir / case_dir.name
     case_output_dir.mkdir(parents=True, exist_ok=True)
+    with (case_output_dir / "duckdb_runtime_trace.json").open("w") as handle:
+        json.dump({"request": request, "response": response}, handle, indent=2)
+        handle.write("\n")
     with (case_output_dir / "actual_request.json").open("w") as handle:
         json.dump(request, handle, indent=2)
         handle.write("\n")
@@ -470,14 +561,12 @@ def write_regression_outputs(
 
 def load_regression_case(case_dir: Path) -> RegressionCase:
     sql_path = case_dir / "input.sql"
-    request_path = case_dir / "input_request.json"
     expected_path = case_dir / "expected_response.json"
     if not sql_path.exists():
         raise SmokeError(f"Required regression file does not exist: {sql_path}")
     sql = sql_path.read_text()
-    request = read_json(request_path)
     expected_response = read_json(expected_path)
-    return RegressionCase(case_dir=case_dir, sql=sql, request=request, expected_response=expected_response)
+    return RegressionCase(case_dir=case_dir, sql=sql, expected_response=expected_response)
 
 
 def discover_regression_cases(case_dir: Path | None, testdata_dir: Path | None) -> list[Path]:
@@ -489,7 +578,7 @@ def discover_regression_cases(case_dir: Path | None, testdata_dir: Path | None) 
     cases = sorted(
         item
         for item in root.iterdir()
-        if item.is_dir() and (item / "input_request.json").exists() and (item / "expected_response.json").exists()
+        if item.is_dir() and (item / "input.sql").exists() and (item / "expected_response.json").exists()
     )
     if not cases:
         raise SmokeError(f"No regression cases found under: {root}")
@@ -498,32 +587,60 @@ def discover_regression_cases(case_dir: Path | None, testdata_dir: Path | None) 
 
 def run_regression_case(
     case: RegressionCase,
-    deps: NeuSODependencies,
+    duckdb: Path,
+    database: Path,
     device: str,
     output_dir: Path | None,
+    sidecar_script: Path | None,
+    host: str,
+    port: int,
 ) -> dict[str, Any]:
     if not case.sql.strip():
         raise SmokeError(f"Regression input.sql is empty: {case.case_dir / 'input.sql'}")
-    join_order, latency_ms = infer_join_order(case.request, deps, device)
-    response = build_response(case.request, join_order, latency_ms)
-    validate_response(case.request, response)
+    case_output_dir = (output_dir or Path("/tmp/neuso-runtime-regression")) / case.case_dir.name
+    case_output_dir.mkdir(parents=True, exist_ok=True)
+    trace_file = case_output_dir / "duckdb_runtime_trace.json"
+    _, trace = run_duckdb_runtime(
+        duckdb,
+        database,
+        case.sql,
+        sidecar_script,
+        host,
+        port,
+        device,
+        trace_file,
+    )
+    request = trace["request"]
+    response = trace["response"]
     normalized_response = normalize_response(response)
     if normalized_response != case.expected_response:
         diff = response_diff(case.expected_response, normalized_response, case.case_dir)
         raise SmokeError(f"Regression response mismatch for case {case.case_dir.name}:\n{diff}")
-    write_regression_outputs(output_dir, case.case_dir, case.request, response, normalized_response)
+    write_regression_outputs(output_dir, case.case_dir, request, response, normalized_response)
     return response
 
 
-def run_regression(args: argparse.Namespace, deps: NeuSODependencies) -> int:
+def run_regression(args: argparse.Namespace) -> int:
+    if args.duckdb is None:
+        raise SmokeError("--duckdb is required in regression mode")
     case_dirs = discover_regression_cases(args.case_dir, args.testdata_dir)
-    for case_dir in case_dirs:
+    output_root = args.output or Path("/tmp/neuso-runtime-regression")
+    output_root.mkdir(parents=True, exist_ok=True)
+    for case_index, case_dir in enumerate(case_dirs):
         case = load_regression_case(case_dir)
-        run_regression_case(case, deps, args.device, args.output)
-        print(
-            f"regression case: {case_dir.name} ok "
-            f"(relations={case.request['scope']['relation_count']}, edges={len(case.request['edges'])})"
+        database = output_root / f"{case_dir.name}.duckdb"
+        case_port = args.sidecar_port + case_index
+        response = run_regression_case(
+            case,
+            args.duckdb,
+            database,
+            args.device,
+            output_root,
+            args.sidecar_script,
+            args.sidecar_host,
+            case_port,
         )
+        print(f"regression case: {case_dir.name} ok (join_order={response['join_order']})")
 
     print("neuso_runtime_bridge_smoke: ok")
     print(f"mode: {args.mode}")
@@ -533,9 +650,37 @@ def run_regression(args: argparse.Namespace, deps: NeuSODependencies) -> int:
 
 
 def run_smoke(args: argparse.Namespace) -> int:
-    deps = load_neuso_dependencies()
     if args.mode in ("regression", "golden"):
-        return run_regression(args, deps)
+        return run_regression(args)
+    if args.mode == "duckdb-runtime":
+        if args.duckdb is None:
+            raise SmokeError("--duckdb is required in duckdb-runtime mode")
+        output_dir = args.output or Path("/tmp/neuso-runtime-bridge-smoke")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        database = args.database or output_dir / "neuso-runtime-smoke.duckdb"
+        trace_file = output_dir / "duckdb_runtime_trace.json"
+        combined_output, trace = run_duckdb_runtime(
+            args.duckdb,
+            database,
+            None,
+            args.sidecar_script,
+            args.sidecar_host,
+            args.sidecar_port,
+            args.device,
+            trace_file,
+            "100",
+        )
+        print("neuso_runtime_bridge_smoke: ok")
+        print("mode: duckdb-runtime")
+        print(f"duckdb: {args.duckdb}")
+        print(f"database: {database}")
+        print(f"trace_file: {trace_file}")
+        print(f"response_join_order: {trace['response']['join_order']}")
+        print("duckdb output:")
+        print(combined_output)
+        return 0
+
+    deps = load_neuso_dependencies()
     if args.mode == "fixture":
         request = build_fixture_request()
     elif args.mode == "duckdb-export":
@@ -565,7 +710,11 @@ def run_smoke(args: argparse.Namespace) -> int:
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--mode", choices=["regression", "golden", "fixture", "duckdb-export"], default="regression")
+    parser.add_argument(
+        "--mode",
+        choices=["regression", "golden", "fixture", "duckdb-runtime", "duckdb-export"],
+        default="regression",
+    )
     parser.add_argument("--device", choices=["cpu", "cuda"], default="cpu")
     parser.add_argument("--case-dir", type=Path, help="Single regression case directory")
     parser.add_argument(
@@ -577,6 +726,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--duckdb", type=Path, help="DuckDB CLI binary for duckdb-export mode")
     parser.add_argument("--database", type=Path, help="DuckDB database path for duckdb-export mode")
     parser.add_argument("--output", type=Path, help="Directory to write smoke request/response JSON files")
+    parser.add_argument(
+        "--sidecar-script",
+        type=Path,
+        default=Path("scripts/adl_opt/neuso_runtime_sidecar.py"),
+        help="Sidecar script path for duckdb-runtime mode",
+    )
+    parser.add_argument("--sidecar-host", default="127.0.0.1", help="Sidecar host for duckdb-runtime mode")
+    parser.add_argument("--sidecar-port", type=int, default=8765, help="Sidecar port for duckdb-runtime mode")
     return parser.parse_args(argv)
 
 

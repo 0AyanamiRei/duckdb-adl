@@ -29,6 +29,7 @@
 #include "duckdb/parallel/task_scheduler.hpp"
 #include "duckdb/parser/parser.hpp"
 #include "duckdb/planner/expression_binder.hpp"
+#include "duckdb/optimizer/join_order/neuso_runtime_bridge.hpp"
 #include "duckdb/storage/external_file_cache/external_file_cache.hpp"
 #include "duckdb/storage/buffer/buffer_pool.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
@@ -72,6 +73,20 @@ bool AccessModeSetting::OnGlobalSet(DatabaseInstance *db, DBConfig &config, cons
 		                            "opening or attaching the database");
 	}
 	return true;
+}
+
+//===----------------------------------------------------------------------===//
+// ADL NeuSO Runtime Enabled
+//===----------------------------------------------------------------------===//
+void AdlNeusoRuntimeEnabledSetting::OnSet(SettingCallbackInfo &info, Value &input) {
+	if (!input.GetValue<bool>()) {
+		return;
+	}
+	if (info.context) {
+		NeuSORuntimeBridge::EnsureStarted(*info.context);
+	} else {
+		NeuSORuntimeBridge::EnsureStarted(info.config);
+	}
 }
 
 //===----------------------------------------------------------------------===//

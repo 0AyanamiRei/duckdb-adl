@@ -1,7 +1,5 @@
 {
   "version": 1,
-  "request_id": "fixture_chain_12",
-  "graph_hash": "4b82e82cde6a9e97",
   "status": "ok",
   "model_version": "neuso_contract_smoke",
   "join_order": [

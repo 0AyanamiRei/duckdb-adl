@@ -1,6 +1,7 @@
--- NeuSO runtime bridge golden case: 12-way regular inner chain join.
--- Current golden mode does not execute this SQL. It documents the SQL shape
--- represented by input_request.json and can be reused by future duckdb-export mode.
+-- NeuSO runtime bridge regression case: 12-way regular inner chain join.
+-- Regression mode executes this SQL through DuckDB, lets DuckDB call the
+-- auto-managed NeuSO sidecar, and compares the sidecar response with
+-- expected_response.json.
 
 CREATE OR REPLACE TABLE t0 AS SELECT i::INTEGER AS i FROM range(100) AS r(i);
 CREATE OR REPLACE TABLE t1 AS SELECT i::INTEGER AS i FROM range(100) AS r(i);
@@ -15,7 +16,7 @@ CREATE OR REPLACE TABLE t9 AS SELECT i::INTEGER AS i FROM range(100) AS r(i);
 CREATE OR REPLACE TABLE t10 AS SELECT i::INTEGER AS i FROM range(100) AS r(i);
 CREATE OR REPLACE TABLE t11 AS SELECT i::INTEGER AS i FROM range(100) AS r(i);
 
-EXPLAIN SELECT count(*)
+SELECT count(*)
 FROM t0
 JOIN t1 ON t0.i = t1.i
 JOIN t2 ON t1.i = t2.i
