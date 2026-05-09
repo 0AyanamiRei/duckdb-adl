@@ -1,81 +1,158 @@
 # NeuSO Runtime DuckDB Bridge
 
-English TL;DR: DuckDB should call NeuSO during join-order optimization with a large regular inner join graph plus optimizer-stage estimates, receive a linear relation-id join order, validate it, and later apply it as a forced left-deep plan.
+English TL;DR: DuckDB now pre-starts an experimental NeuSO Python sidecar, generates IKKBZ-style base linear orders inside join-order optimization, sends the join graph plus base order to NeuSO over HTTP JSON, validates the returned relation-id order, and still leaves DuckDB's native plan unchanged for this phase.
 
 Updated: 2026-05-09
 
-Key terms: NeuSO, DuckDB, runtime inference, join order, large join, sidecar, relation id, left-deep plan
+Key terms: NeuSO, DuckDB, runtime inference, join order, IKKBZ, sidecar, relation id, left-deep plan
 
 ## 目标边界
 
-这份文档只讨论数据库运行时，也就是一条 SQL 进入 DuckDB 后，在 query optimization 阶段如何接入 NeuSO。它不讨论训练流程、离线数据集生成、JSONL harness、模型标签采样或 benchmark 设计。
+本文只说明 DuckDB 在线优化阶段如何接入 NeuSO。它不讨论模型训练、离线数据集生成、标签采样、benchmark 设计，也不把 NeuSO 返回的 order 绑定到最终 physical rule。
 
-这里的 NeuSO 不是直接接收 SQL，也不是在物理执行阶段拦截 operator。DuckDB 仍然负责 parser、binder、logical plan、join graph 抽取、计划重建和执行。NeuSO 只接收 DuckDB 已经抽取好的 join-order 子问题，并返回一个 relation id 线性顺序。
+当前实现的目标是验证运行时接口闭环：
 
-第一版目标仍然限制在 DuckDB large-join approximate 区间：
+- DuckDB 能自动管理 Python sidecar。
+- DuckDB 能在 join-order optimization 中构造 NeuSO runtime request。
+- Request 包含 DuckDB join graph、optimizer-stage estimated feature，以及 PR5 线性化路径产生的 base linear order。
+- NeuSO sidecar 能返回合法 relation-id `join_order`。
+- DuckDB 能校验 response 属于当前 request，并校验 order 是合法 permutation 和 connected append path。
 
-- 只处理 `n >= 12` 的 large join 子图。
-- 只处理 regular inner pair graph。
-- 不覆盖 outer、semi、anti、ASOF、MARK、SINGLE、dependent/delim join。
-- 不覆盖 hyper-edge 或需要复杂 legality constraint 的 join 子图。
-- 不改变 DuckDB public API。
+当前实现仍然不改变 DuckDB 的最终计划。`NeuSORuntimeBridge::InvokeIfEnabled()` 校验 response 后返回，随后 `PlanEnumerator::SolveJoinOrder()` 继续走 DuckDB 原生逻辑。后续真正应用 NeuSO order 时，才需要把 response 转成 forced left-deep `DPJoinNode` 链并写回 `plans` 表。
 
-当前实验实现只验证“DuckDB 能否自动管理 Python sidecar 并完成 HTTP JSON request/response 校验”。`adl_neuso_runtime_enabled=true` 会在 setting 生效时预启动 sidecar；后续 join-order optimization 阶段只发送 NeuSO request 并校验 response，避免把 Python 进程冷启动时间混进单条 SQL 的优化耗时。如果模型不可用、超时或返回非法结果，当前实现直接报错，便于开发阶段暴露接口问题。等进入“应用 NeuSO join order 到最终计划”的阶段后，再补充原生 optimizer fallback，避免 NeuSO 降低普通 SQL 的可靠性。
+第一版支持范围仍然很窄：
 
-## 运行时链路
+- 只在 `relation_count >= PlanEnumerator::THRESHOLD_TO_SWAP_TO_APPROXIMATE` 时调用 NeuSO runtime bridge。
+- 只支持 regular inner pair graph。
+- 不支持 outer、semi、anti、ASOF、MARK、SINGLE、dependent/delim join。
+- 不支持 hyper-edge 或需要复杂 legality constraint 的 join 子图。
+- 不新增 DuckDB public API。
 
-推荐链路如下：
+## 当前链路
+
+当前代码路径是：
 
 ```text
-SQL
-  -> DuckDB CLI -cmd / DBConfig 设置 adl_neuso_* 并预启动 sidecar
-  -> workload SQL
+DuckDB CLI -cmd / DBConfig
+  -> 设置 adl_neuso_sidecar_command/host/port/timeout
+  -> 可选设置 adl_linearize_join_order / adl_ikkbz_k
+  -> SET adl_neuso_runtime_enabled = true
+     -> AdlNeusoRuntimeEnabledSetting::OnSet()
+     -> NeuSORuntimeBridge::EnsureStarted()
+     -> fork Python sidecar 并等待 /health
+
+workload SQL
   -> parser / binder / planner
-  -> logical plan
-  -> JoinOrderOptimizer
-  -> QueryGraphManager 抽取可重排 join-order 子图
-  -> CostModel / CardinalityEstimator 准备估计特征
-  -> ADLOptJoinLinearizer 生成 base linear order candidates
-  -> DuckDB 构造 NeuSO request，携带 join graph + base linear order
-  -> 已启动的 NeuSO sidecar 或 native runtime 推理
-  -> NeuSO 返回 linear join_order
-  -> DuckDB 校验 response
-  -> DuckDB 构造 forced left-deep DPJoinNode 链
+  -> JoinOrderOptimizer::Optimize()
+  -> QueryGraphManager::Build()
+  -> CostModel
+  -> PlanEnumerator::InitLeafPlans()
+  -> ExportADLOptJoinLinearization()
+     -> 如果 adl_linearize_join_order=true:
+        ADLOptJoinLinearizer::Generate()
+        生成 ADLOptJoinLinearizationResult::linear_orders
+        可选写 adl_linearization_output
+  -> NeuSORuntimeBridge::InvokeIfEnabled(query_graph_manager, cost_model, linear_orders)
+     -> relation_count 小于 large-join threshold 时跳过
+     -> sidecar 已预启动且配置匹配时不再做 /health
+     -> BuildRequestJSON()
+     -> POST /infer_join_order
+     -> ValidateResponse()
+  -> PlanEnumerator::SolveJoinOrder()
   -> QueryGraphManager::Reconstruct()
-  -> physical plan
   -> execution
 ```
 
-关键点是：NeuSO 输出不直接替换 SQL，也不直接生成 DuckDB `LogicalOperator`。DuckDB 应该把 NeuSO 返回的 `join_order` 转成 join-order optimizer 能理解的 forced plan，再复用 `QueryGraphManager::Reconstruct()` 生成 logical join tree。sidecar 生命周期由 DuckDB 管理，但启动时机在 workload SQL 进入优化器之前；优化阶段的 `EnsureStarted` 只作为健康检查和兜底。
+这个顺序很重要：PR5 的线性化结果先生成，再作为 NeuSO request 中的 `base_linear_order` / `candidate_linear_orders` 传给模型。NeuSO 目前只参与“输入/输出和合法性验证”，不接管 `PlanEnumerator`。
 
-最自然的 C++ 接入位置在 join-order pass 内部：`QueryGraphManager` 已经完成 relation 和 edge 抽取，`CostModel` 和 cardinality estimator 可以提供优化阶段估计，`PlanEnumerator` 附近可以构造或替换 join-order decision。未来实现时，应避免在 `Reconstruct()` 之后再试图改写已经生成的 logical plan。
+相关代码位置：
+
+- `src/main/settings/custom_settings.cpp`：`AdlNeusoRuntimeEnabledSetting::OnSet()` 触发 sidecar 预启动。
+- `src/optimizer/join_order/join_order_optimizer.cpp`：先调用 `ExportADLOptJoinLinearization()`，再调用 `NeuSORuntimeBridge::InvokeIfEnabled()`。
+- `src/optimizer/join_order/adl_opt_join_linearizer.cpp`：生成 IKKBZ/MST-style `linear_orders`。
+- `src/optimizer/join_order/neuso_runtime_bridge.cpp`：管理 sidecar、构造 request、发送 HTTP JSON、校验 response。
+- `scripts/adl_opt/neuso_runtime_sidecar.py`：Python HTTP sidecar。
+- `scripts/adl_opt/neuso_runtime_bridge_smoke.py`：文件驱动 regression runner。
+
+## Settings
+
+NeuSO runtime bridge 使用这些 experimental local settings：
+
+- `adl_neuso_runtime_enabled`：启用 runtime bridge，并在 setting 生效时预启动 sidecar。
+- `adl_neuso_sidecar_command`：启动 Python sidecar 的 shell command。
+- `adl_neuso_sidecar_host`：sidecar host，默认 `127.0.0.1`。
+- `adl_neuso_sidecar_port`：sidecar port，默认 `8765`。
+- `adl_neuso_sidecar_timeout_ms`：sidecar health check 和 request timeout。
+
+PR5 线性化 settings 与 NeuSO runtime bridge 是相邻但不同的功能：
+
+- `adl_linearize_join_order`：打开 IKKBZ linearization export 和内存中的 `linear_orders` 生成。
+- `adl_ikkbz_k`：请求导出的 root candidate 数量。
+- `adl_linearization_output`：可选 full JSON 输出文件；NeuSO runtime bridge 不依赖这个文件，而是直接使用内存中的 `ADLOptJoinLinearizationResult::linear_orders`。
+
+当前 regression runner 会通过 DuckDB CLI `-cmd` 同时设置：
+
+```sql
+SET adl_neuso_sidecar_command = '...';
+SET adl_neuso_sidecar_host = '127.0.0.1';
+SET adl_neuso_sidecar_port = ...;
+SET adl_neuso_sidecar_timeout_ms = 10000;
+SET adl_linearize_join_order = true;
+SET adl_ikkbz_k = 1;
+SET adl_neuso_runtime_enabled = true;
+```
+
+这样 workload SQL 进入 optimizer 前，sidecar 已经启动；进入 optimizer 后，request 会带上 PR5 线性化生成的 base order。
+
+## Sidecar 生命周期
+
+`NeuSOSidecarProcess` 是 DuckDB 进程内的单例管理器。
+
+启动路径：
+
+1. `SET adl_neuso_runtime_enabled = true` 触发 setting callback。
+2. 如果 callback 有 `ClientContext`，调用 `NeuSORuntimeBridge::EnsureStarted(ClientContext&)`；否则调用 `EnsureStarted(DBConfig&)`。
+3. `EnsureStarted()` 先访问 `/health`。
+4. 如果 sidecar 没有响应，POSIX 平台使用 `fork()`、`setsid()` 和 `/bin/sh -c <command>` 启动子进程。
+5. 子进程 stdout/stderr 重定向到 `/dev/null`。
+6. DuckDB 轮询 `/health`，直到 sidecar ready 或超时。
+
+优化阶段路径：
+
+- `InvokeIfEnabled()` 先读取当前 session settings。
+- 如果 bridge 未启用，直接返回。
+- 如果 relation 数量低于 large-join threshold，直接返回。
+- 如果 sidecar 已经以相同 command/host/port 启动，直接发送 `/infer_join_order`，不再额外做 `/health`。
+- 如果 sidecar 没有启动，调用 `EnsureStarted()` 作为兜底。
+
+当前没有实现配置热切换，也没有在 `SET adl_neuso_runtime_enabled=false` 时停止 sidecar。这两个行为暂时不是本阶段目标。
 
 ## DuckDB 给 NeuSO 的输入
 
-DuckDB 给 NeuSO 的 request 应该表达“当前 join-order 子问题”，而不是原始 SQL 文本。跨边界主键必须是 DuckDB join-order relation id；alias 和 debug label 只用于日志、调试和人工解释。
+DuckDB 给 NeuSO 的 request 表达当前 join-order 子问题，而不是 SQL 文本。跨边界主键是 DuckDB join-order relation id；alias/debug label 只用于调试。
 
-示例 request：
+当前 request 的字段形态如下。`relations` 和 `edges` 数组只展示代表性条目；真实完整 request 可以通过 regression runner 的 `actual_request.json` 查看。
 
 ```json
 {
   "version": 1,
-  "request_id": "stmt_42_scope_0",
-  "graph_hash": "8f31c2...",
+  "request_id": "duckdb_neuso_140735612345678",
+  "graph_hash": "8f31c2a4b5d6e7f8",
   "mode": "linear_join_order",
   "scope": {
-    "relation_count": 17,
+    "relation_count": 12,
     "large_join_threshold": 12,
     "supported_shape": "regular_inner_pair_graph"
   },
   "relations": [
     {
       "relation_id": 0,
-      "debug_label": "r0",
-      "alias": "mi",
-      "table": "movie_info",
-      "base_cardinality": 14835720,
-      "estimated_cardinality": 93210,
-      "degree": 3
+      "debug_label": "t0",
+      "alias": "t0",
+      "table": "t0",
+      "base_cardinality": 100,
+      "estimated_cardinality": 100,
+      "degree": 1
     }
   ],
   "edges": [
@@ -85,51 +162,58 @@ DuckDB 给 NeuSO 的 request 应该表达“当前 join-order 子问题”，而
       "right_relation_id": 1,
       "join_type": "INNER",
       "predicate_type": "EQUAL",
-      "estimated_pair_cardinality": 12000,
-      "selectivity": 0.00017,
-      "estimated_join_cost": 105000
+      "estimated_pair_cardinality": 100,
+      "selectivity": 0.01,
+      "estimated_join_cost": 100
     }
   ],
-  "base_linear_order": [0, 1, 2, 3],
+  "base_linear_order": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
   "candidate_linear_orders": [
     {
       "linear_order_id": "ikkbz_root_0",
-      "relation_id_order": [0, 1, 2, 3]
+      "relation_id_order": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
     }
   ]
 }
 ```
 
-第一版 request 至少应该包含：
+字段说明：
 
-- `relation_id`：跨 DuckDB 和 NeuSO 的稳定主键。
-- `relations[*].base_cardinality`：基础 relation cardinality。
-- `relations[*].estimated_cardinality`：本地 filter 后的优化阶段估计 cardinality。
-- `relations[*].degree`：当前 join graph 中的度，可由 DuckDB 构造 request 时计算。
-- `edges[*].left_relation_id` / `right_relation_id`：join graph 边。
-- `edges[*].join_type`：第一版应始终是 `INNER`。
-- `edges[*].predicate_type`：例如 `EQUAL`、`LESS_THAN`，用于区分 predicate 形态。
-- `edges[*].estimated_pair_cardinality`：两端 relation join 后的估计 cardinality。
-- `edges[*].selectivity`：由 pair cardinality 和两端 cardinality 推导的估计选择率。
-- `edges[*].estimated_join_cost`：如果 DuckDB 侧能便宜计算，应作为可选特征提供。
-- `base_linear_order`：PR5 线性化导出的首个 relation-id order，作为 NeuSO 在线优化的上游 base order。
-- `candidate_linear_orders[*].relation_id_order`：PR5 可导出的候选 order；第一版 runtime bridge 至少提供首个候选。
+- `version`：当前为 `1`。
+- `request_id`：当前用 `QueryGraphManager` 指针地址生成，只用于同一请求/响应匹配。
+- `graph_hash`：由 relation id 列表和 regular inner edge 列表生成；当前不包含 cardinality、cost、base order 或 request id。
+- `mode`：当前固定为 `linear_join_order`。
+- `scope.relation_count`：当前 join-order 子图 relation 数量。
+- `scope.large_join_threshold`：DuckDB large-join approximate threshold。
+- `scope.supported_shape`：当前固定为 `regular_inner_pair_graph`。
+- `relations[*].relation_id`：DuckDB join-order relation id。
+- `relations[*].debug_label` / `alias` / `table`：来自 `RelationStats::table_name`，为空时回退为 `r<id>`。
+- `relations[*].base_cardinality`：`RelationStats::cardinality`。
+- `relations[*].estimated_cardinality`：当前实现与 `base_cardinality` 相同。
+- `relations[*].degree`：request 构造时按 join graph edge 统计。
+- `edges[*].left_relation_id` / `right_relation_id`：pair edge 两端 relation id。
+- `edges[*].join_type`：当前只允许 `INNER`。
+- `edges[*].predicate_type`：来自 `ExpressionTypeName(filter->GetExpressionType())`。
+- `edges[*].estimated_pair_cardinality`：`CostModel::cardinality_estimator.EstimateCardinalityWithSet(pair_set)`。
+- `edges[*].selectivity`：`pair_cardinality / (left_cardinality * right_cardinality)`。
+- `edges[*].estimated_join_cost`：当前直接复用 `pair_cardinality`。
+- `base_linear_order`：`linear_orders[0]`，来自 `ADLOptJoinLinearizer::Generate()`。
+- `candidate_linear_orders[*].relation_id_order`：所有传入 bridge 的 candidate order；当前 regression 用 `adl_ikkbz_k=1`，因此只有一个候选。
 
-这些字段是在线推理特征，不是监督标签。它们来自 DuckDB 优化阶段已有的统计、基数估计和代价估计。
+如果没有打开 `adl_linearize_join_order`，`linear_orders` 为空，request 中不会包含 `base_linear_order` 或 `candidate_linear_orders`。当前 regression 会打开该 setting，因此测试 trace 中应当能看到这两个字段。
 
 ## Cost 和 Cardinality 边界
 
-NeuSO 在线推理不应该依赖实际执行后的信息。运行时 request 不应该要求 DuckDB 先执行候选 join，或采样真实中间结果 cardinality。
-
-在线推理可以使用：
+NeuSO 在线推理可以使用 DuckDB 优化阶段已经拥有或可以便宜估计的信息：
 
 - base cardinality。
 - filter 后 estimated cardinality。
 - pair join estimated cardinality。
 - selectivity。
 - predicate type。
-- DuckDB estimated join cost 或 transition cost。
-- join graph topology，例如 degree 和邻接关系。
+- estimated join/transition cost。
+- join graph topology。
+- PR5 线性化得到的 base linear order / candidate order。
 
 在线推理不应该要求：
 
@@ -139,144 +223,154 @@ NeuSO 在线推理不应该依赖实际执行后的信息。运行时 request �
 - sampled best path。
 - benchmark latency label。
 
-换句话说，NeuSO 运行时接入并不是“没有代价信息”。它使用的是 DuckDB 优化阶段能拿到的估计型 cost/cardinality/statistics feature，而不是执行后才知道的真实 label。
+因此，NeuSO runtime 接入不是“无代价信息”。它使用的是 optimizer-stage estimated feature，而不是执行后才知道的 label。
 
 ## NeuSO 返回 DuckDB 的输出
 
-NeuSO 第一版返回完整线性 join order。这个 order 是 relation id permutation，语义是 left-deep single-relation append。
+NeuSO 返回完整线性 join order。这个 order 是 relation id permutation，语义是 left-deep single-relation append。
 
-示例 response：
+当前 response 形态如下：
 
 ```json
 {
   "version": 1,
-  "request_id": "stmt_42_scope_0",
-  "graph_hash": "8f31c2...",
+  "request_id": "duckdb_neuso_140735612345678",
+  "graph_hash": "8f31c2a4b5d6e7f8",
   "status": "ok",
-  "model_version": "neuso_sidecar_v1",
-  "join_order": [3, 8, 1, 0, 2, 5, 4],
-  "score": 12.37,
-  "latency_ms": 6.4
+  "model_version": "neuso_contract_smoke",
+  "join_order": [0, 1, 2, 3],
+  "latency_ms": 4.2
 }
 ```
 
-`join_order` 的含义是：
+C++ bridge 当前校验这些字段：
+
+- `version` 必须为 `1`。
+- `status` 必须为 `ok`。
+- `model_version` 必须是非空字符串。
+- `request_id` 必须与当前 request 完全匹配。
+- `graph_hash` 必须与当前 request 完全匹配。
+- `join_order` 必须是 unsigned integer 数组。
+
+`latency_ms` 是 sidecar 和 regression runner 使用的观测字段；C++ bridge 当前不要求它存在，也不使用它做决策。runner 会要求 sidecar response 包含 `latency_ms`，用于接口验证和 CPU/GPU smoke 对比。
+
+`join_order` 的语义：
 
 ```text
-r3
-(r3 join r8)
-((r3 join r8) join r1)
-(((r3 join r8) join r1) join r0)
+r0
+(r0 join r1)
+((r0 join r1) join r2)
+(((r0 join r1) join r2) join r3)
 ...
 ```
 
-NeuSO 不返回 bushy tree，也不返回 `(a,b) + (c,d)` 这种 pair-merge decision。它返回的是单 relation 追加序列。DuckDB 可以把它解释为 left-deep join tree。
-
-如果 NeuSO 无法处理当前 request，应返回结构化失败，例如：
-
-```json
-{
-  "version": 1,
-  "request_id": "stmt_42_scope_0",
-  "graph_hash": "8f31c2...",
-  "status": "unsupported",
-  "failure_reason": "non_regular_inner_pair_graph"
-}
-```
-
-当前实验实现收到非 `ok` status 后会直接报错。未来当 NeuSO order 开始影响最终计划时，应该再改成结构化回退原生 optimizer。
+NeuSO 不返回 bushy tree，也不返回 pair-merge decision。DuckDB 未来应用它时，应把它解释为 left-deep single-relation append order。
 
 ## 校验和失败处理
 
-DuckDB 不能直接信任 NeuSO response。应用前必须校验：
+C++ bridge 不信任 sidecar response。当前校验分三层。
 
-- `request_id` 匹配当前 optimizer 子问题。
-- `graph_hash` 匹配当前 request，避免使用旧 response。
+Request 构造前置条件：
+
+- `InvokeIfEnabled()` 只在 `relation_count >= PlanEnumerator::THRESHOLD_TO_SWAP_TO_APPROXIMATE` 时继续。
+- `BuildRequestJSON()` 只接受 `JoinType::INNER`。
+- `BuildRequestJSON()` 只接受 singleton-pair edge，即 `left_set->count == 1 && right_set->count == 1`。
+- `relation_count > 1` 但没有 join edge 时直接报错。
+
+Response 结构校验：
+
+- JSON 必须能被 yyjson 解析。
+- root 必须是 object。
+- `version == 1`。
 - `status == "ok"`。
-- `join_order` 长度等于 `relation_count`。
-- 每个 relation id 正好出现一次。
-- 每个 relation id 都在当前 `QueryGraphManager` 子图中存在。
-- 当前子图仍满足 `n >= 12` 和 regular inner pair graph 约束。
-- 每一步 append 的 relation 与当前 joined set 至少存在一条 join edge，除非显式允许 cross product。
+- `model_version` 非空。
+- `request_id` 匹配当前 request。
+- `graph_hash` 匹配当前 request。
+- `join_order` 是 unsigned integer array。
 
-如果任一校验失败，或 sidecar 超时、崩溃、返回 malformed JSON，当前实验实现直接报错：
+Join order 语义校验：
+
+- `join_order.size() == relation_count`。
+- 每个 relation id 都在 `[0, relation_count)`。
+- 每个 relation id 正好出现一次。
+- 从第二个 relation 开始，每一步 append 的 relation 都必须与已加入集合中至少一个 relation 有 query graph connection。
+
+如果任一校验失败，或 sidecar 超时、崩溃、返回 non-200/malformed JSON，当前实现直接抛出 `InvalidInputException`。这符合“先验证接口，不处理失败回退”的阶段目标。
+
+未来当 NeuSO order 开始影响最终计划时，应改成 fail-closed fallback：
 
 ```text
-记录调试 metadata
+记录 request_id / graph_hash / error reason
 丢弃 NeuSO response
-抛出 InvalidInputException / NotImplementedException
+继续使用 DuckDB 原生 PlanEnumerator::SolveJoinOrder()
 ```
-
-这符合当前“先验证接口，不处理失败回退”的阶段目标。未来如果启用 NeuSO 来实际改变 plan，这里应改为 fail closed fallback：记录调试 metadata、丢弃 NeuSO response、继续使用 DuckDB 原生 `PlanEnumerator` / approximate greedy path。
 
 ## DuckDB 侧应用语义
 
-DuckDB 收到合法 `join_order` 后，还需要把它应用到 join-order optimizer 内部结构。仅仅拿到数组不会改变最终计划。
+当前实现不应用 NeuSO 返回的 `join_order`。`NeuSORuntimeBridge::InvokeIfEnabled()` 校验通过后返回，`JoinOrderOptimizer::Optimize()` 继续调用 `plan_enumerator.SolveJoinOrder()`。
 
-推荐实现方向是新增一个内部 helper，例如：
+未来应用方向是新增内部 helper，例如：
 
-```text
-BuildForcedLinearPlan(join_order)
+```cpp
+bool TryBuildForcedLeftDeepPlan(
+    QueryGraphManager &query_graph_manager,
+    CostModel &cost_model,
+    PlanEnumerator &plan_enumerator,
+    const vector<idx_t> &join_order
+);
 ```
 
-它负责：
+该 helper 应做这些事：
 
-- 按 `join_order` 找到对应 singleton `JoinRelationSet`。
-- 从第一个 relation 开始构造 left-deep join 链。
-- 每一步选择当前 joined set 和新增 relation 之间的可用 `NeighborInfo` / join filter。
-- 调用或复用 `CreateJoinTree` 风格逻辑生成 `DPJoinNode`。
-- 将每个中间 set 的 forced node 写入 `PlanEnumerator` 的 `plans` 表。
-- 最终让 full relation set 对应 NeuSO forced plan。
+1. 按 `join_order` 找 singleton `JoinRelationSet`。
+2. 从第一个 relation 开始构造 left-deep join 链。
+3. 对每一步 append，复用 `QueryGraphEdges::GetConnections()` 找 join filter。
+4. 为每个中间 set 生成 `DPJoinNode`。
+5. 写入 `PlanEnumerator` 的 `plans` 表。
+6. 让最终 full relation set 对应 NeuSO forced plan。
 
-随后继续走：
+随后仍走：
 
-```text
-query_graph_manager.plans = &plan_enumerator.GetPlans()
-QueryGraphManager::Reconstruct()
+```cpp
+query_graph_manager.plans = &plan_enumerator.GetPlans();
+QueryGraphManager::Reconstruct();
 ```
 
-这样做的好处是，join condition 反转、filter 消费、estimated cardinality 写回、logical join tree 重建等逻辑仍然由 DuckDB 原生路径处理。NeuSO 只负责 order decision。
+这样可以复用 DuckDB 原生的 join condition、filter 消费、cardinality 写回和 logical plan reconstruction 逻辑。应避免在 `Reconstruct()` 之后再改写 logical plan。
 
 ## Sidecar 和 Native Runtime 的共同边界
 
-第一版可以先用 Python sidecar，因为它最容易复用现有 NeuSO PyTorch 代码。未来如果要做 C++ native inference，也应该复用同一个语义边界：
+当前实现使用 Python sidecar，因为它最容易复用 NeuSO PyTorch 代码。
+
+Sidecar endpoint：
+
+- `GET /health`：返回 sidecar health 和 `model_version`。
+- `POST /infer_join_order`：接收 runtime request，返回 response。
+
+Sidecar 行为：
+
+- `scripts/adl_opt/neuso_runtime_sidecar.py` 启动 `ThreadingHTTPServer`。
+- `NeuSOSidecar.infer()` 内部加锁，因此当前同一 sidecar 进程内推理是串行的。
+- 可选 `--trace-file` 会写出最后一次 request/response。
+- 当前 smoke 使用 deterministic mock scorer，不证明模型质量或性能收益。
+
+未来如果做 C++ native inference，应保持相同语义边界：
 
 ```text
-DuckDB runtime features
-  -> NeuSO-compatible inference input
+DuckDB optimizer-stage feature + base linear order
+  -> NeuSO-compatible request
   -> relation-id linear join_order
   -> DuckDB validation
   -> forced left-deep plan
 ```
 
-sidecar 和 native runtime 的差别只应该体现在 transport 和模型执行方式上，不应该改变 DuckDB 对 response 的解释方式。
-
-因此，内部 wire contract 应保持：
-
-- request 使用 relation id 表达 join graph。
-- request 使用 optimizer-stage estimated feature。
-- response 使用 relation id permutation。
-- DuckDB 独立负责校验；fallback 在后续真正应用 NeuSO order 时补齐。
+Sidecar 和 native runtime 的差异只应该体现在 transport 和模型执行方式上，不应该改变 DuckDB 对 request/response 的解释。
 
 ## 验证方式
 
-NeuSO runtime bridge 的第一版验证目标不是证明模型能带来性能提升，而是证明接口契约成立。测试人员需要能直观看到“这条 SQL 对应什么 join graph request，以及 NeuSO 应该返回什么稳定格式”。因此，推荐使用文件驱动 regression case，而不是只看脚本打印的临时 response。
+当前推荐的测试是文件驱动 regression。测试输入 SQL 和 expected response 放在文件中，runner 负责让 DuckDB 执行 SQL、自动拉起 sidecar、读取 sidecar trace，并比较 normalized response。
 
-当前稳定回归测试入口是：
-
-```text
-scripts/adl_opt/neuso_runtime_bridge_smoke.py --mode regression
-```
-
-### Regression Case 结构
-
-测试数据放在：
-
-```text
-scripts/adl_opt/testdata/neuso_runtime_bridge/
-```
-
-每个 case 是一个目录。例如初始 case：
+测试目录：
 
 ```text
 scripts/adl_opt/testdata/neuso_runtime_bridge/chain_12/
@@ -284,26 +378,19 @@ scripts/adl_opt/testdata/neuso_runtime_bridge/chain_12/
   expected_response.json
 ```
 
-两个核心文件的含义是：
+文件含义：
 
-- `input.sql`：实际喂给 DuckDB CLI 的 workload SQL。runner 会先通过 DuckDB CLI `-cmd` 设置 `adl_neuso_sidecar_*`，再设置 `adl_neuso_runtime_enabled=true` 触发 sidecar 预启动；`input.sql` 执行到 join-order optimization 阶段时只负责发送运行时 request 给 NeuSO。
-- `expected_response.json`：从 DuckDB 侧 sidecar trace 中取出的 response 标准答案，只包含稳定字段，例如 `status`、`model_version`、`join_order`。`request_id`、`graph_hash`、`latency_ms` 这类动态字段不参与 regression 精确比较。
+- `input.sql`：实际喂给 DuckDB CLI 的 workload SQL。
+- `expected_response.json`：稳定标准输出，只比较 `version`、`status`、`model_version`、`join_order`。
 
-初始 `chain_12` case 表示 12 张表按 `t0.i = t1.i = ... = t11.i` 形成的 regular inner chain join。DuckDB 实际 runtime request 会写入输出目录中的 `duckdb_runtime_trace.json`，其中包含 relation、edge、cardinality、selectivity、cost feature，以及由 `ADLOptJoinLinearizer` 生成的 `base_linear_order` / `candidate_linear_orders`。期望 response 是：
+`input_request.json` 已删除。当前 request 必须由 DuckDB 真实优化阶段生成，这样测试才能覆盖：
 
-```json
-{
-  "status": "ok",
-  "model_version": "neuso_contract_smoke",
-  "join_order": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
-}
-```
+- PR5 `ADLOptJoinLinearizer::Generate()` 是否生成 base order。
+- NeuSO request 是否携带 `base_linear_order` / `candidate_linear_orders`。
+- DuckDB sidecar bridge 是否能完成 HTTP JSON request/response。
+- DuckDB C++ response 校验是否通过。
 
-实际 response trace 中仍保留 `request_id` 和 `graph_hash`，runner 会先校验它们与 request 匹配；只是 normalized response 与 `expected_response.json` 对比时不固定这些动态值。
-
-### File-Driven Regression 命令
-
-单 case 回归：
+单 case CPU：
 
 ```bash
 PYTHONPATH=NeuSO .venv/bin/python scripts/adl_opt/neuso_runtime_bridge_smoke.py \
@@ -311,6 +398,16 @@ PYTHONPATH=NeuSO .venv/bin/python scripts/adl_opt/neuso_runtime_bridge_smoke.py 
   --duckdb build/reldebug/duckdb \
   --case-dir scripts/adl_opt/testdata/neuso_runtime_bridge/chain_12 \
   --device cpu
+```
+
+单 case CUDA：
+
+```bash
+PYTHONPATH=NeuSO .venv/bin/python scripts/adl_opt/neuso_runtime_bridge_smoke.py \
+  --mode regression \
+  --duckdb build/reldebug/duckdb \
+  --case-dir scripts/adl_opt/testdata/neuso_runtime_bridge/chain_12 \
+  --device cuda
 ```
 
 扫描全部 regression cases：
@@ -323,7 +420,7 @@ PYTHONPATH=NeuSO .venv/bin/python scripts/adl_opt/neuso_runtime_bridge_smoke.py 
   --device cpu
 ```
 
-如果需要保留 actual 文件用于人工检查：
+保留 actual 文件：
 
 ```bash
 PYTHONPATH=NeuSO .venv/bin/python scripts/adl_opt/neuso_runtime_bridge_smoke.py \
@@ -334,71 +431,31 @@ PYTHONPATH=NeuSO .venv/bin/python scripts/adl_opt/neuso_runtime_bridge_smoke.py 
   --output /tmp/neuso-runtime-regression
 ```
 
-脚本会在 `/tmp/neuso-runtime-regression/chain_12/` 下写出：
+输出文件：
 
 ```text
-duckdb_runtime_trace.json
-actual_request.json
-actual_response.json
-actual_response.normalized.json
+/tmp/neuso-runtime-regression/chain_12/
+  duckdb_runtime_trace.json
+  actual_request.json
+  actual_response.json
+  actual_response.normalized.json
 ```
 
-`duckdb_runtime_trace.json` 是 sidecar 看到的真实 request/response；`actual_response.json` 保留 `request_id`、`graph_hash` 和 `latency_ms`，`actual_response.normalized.json` 是去掉动态字段后参与 regression 对比的内容。如果 actual 和 expected 不一致，runner 会打印 unified diff 并以非零状态退出。
-
-如果本机 NeuSO Python 环境支持 CUDA，可以额外运行：
+重点检查：
 
 ```bash
-PYTHONPATH=NeuSO .venv/bin/python scripts/adl_opt/neuso_runtime_bridge_smoke.py \
-  --mode regression \
-  --duckdb build/reldebug/duckdb \
-  --case-dir scripts/adl_opt/testdata/neuso_runtime_bridge/chain_12 \
-  --device cuda
+python3 - <<'PY'
+import json
+with open('/tmp/neuso-runtime-regression/chain_12/duckdb_runtime_trace.json') as f:
+    request = json.load(f)['request']
+print(request.get('base_linear_order'))
+print(request.get('candidate_linear_orders'))
+PY
 ```
 
-CUDA 路径只用于确认 NeuSO runtime 可以在 GPU device 上完成相同接口契约，不把 GPU latency 写入 regression oracle。
+应能看到 `base_linear_order` 是完整 relation-id permutation，并且 `candidate_linear_orders` 至少包含一个候选。
 
-### Runner 校验内容
-
-regression runner 会校验：
-
-- request 包含 `relation_id`、`relation_count`、`graph_hash`、`relations` 和 `edges`。
-- `relation_id` 唯一。
-- `graph_hash` 与 `relations` / `edges` 重新计算结果一致。
-- 所有 edge 都引用已知 relation。
-- 如果 request 包含 `base_linear_order` / `candidate_linear_orders`，它们必须是完整 relation-id permutation。
-- NeuSO adapter 能从 relation id 和 edge 构造 query graph。
-- actual response 包含 `version`、`request_id`、`graph_hash`、`status`、`model_version`、`join_order` 和 `latency_ms`。
-- normalized response 去掉 `request_id`、`graph_hash`、`latency_ms` 后与 `expected_response.json` 精确一致。
-- `join_order` 是完整 relation-id permutation。
-- `join_order` 的每一步 single-relation append 都与当前 joined set 连通。
-
-这个测试使用 deterministic mock scorer，所以稳定 oracle 是接口格式和合法 `join_order`，不是 learned model 的性能收益。
-
-`--mode golden` 作为历史兼容 alias 暂时保留，内部走同一套 regression runner；新文档和新命令不再推荐使用这个名字。
-
-### Fixture 和 DuckDB Export 模式
-
-`fixture` 模式仍然保留，用于快速检查内置 request 是否能跑通：
-
-```bash
-PYTHONPATH=NeuSO .venv/bin/python scripts/adl_opt/neuso_runtime_bridge_smoke.py \
-  --mode fixture \
-  --device cpu
-```
-
-但开发人员检查某个 SQL 场景时，应优先新增 regression case，因为 regression case 的输入和期望输出都在文件中，可 review、可 diff、可扩展。
-
-`duckdb-runtime` 模式用于验证当前阶段的单向 runtime bridge。runner 先用 DuckDB CLI `-cmd` 写入 sidecar command/host/port/timeout，再设置 `adl_neuso_runtime_enabled=true`，由 setting callback 预启动 Python sidecar。之后它把 workload SQL 输入 DuckDB CLI；DuckDB 在 join-order optimization 阶段发送 NeuSO runtime request，接收并校验 response，然后继续使用 DuckDB 原生 join-order plan 执行查询。这个模式验证的是：
-
-```text
-DuckDB startup/config -> auto-managed sidecar pre-start -> SQL -> DuckDB optimizer -> NeuSO response -> DuckDB validation
-```
-
-它暂时不把 NeuSO 返回的 `join_order` 应用到最终计划。
-
-runner 会在 `--output` 目录写出 `duckdb_runtime_trace.json`，其中包含 DuckDB 实际发送给 sidecar 的 request 和 sidecar 实际返回的 response。测试人员可以用这个文件确认 SQL 进入 DuckDB 后跨边界 JSON 的真实形态。
-
-命令示例：
+`duckdb-runtime` 模式用于快速验证 SQL -> DuckDB -> sidecar -> DuckDB validation：
 
 ```bash
 PYTHONPATH=NeuSO .venv/bin/python scripts/adl_opt/neuso_runtime_bridge_smoke.py \
@@ -408,50 +465,53 @@ PYTHONPATH=NeuSO .venv/bin/python scripts/adl_opt/neuso_runtime_bridge_smoke.py 
   --output /tmp/neuso-runtime-smoke
 ```
 
-这个模式要求 DuckDB binary 包含 experimental setting：
+脚本还保留少量辅助/兼容模式：
 
-- `adl_neuso_runtime_enabled`
-- `adl_neuso_sidecar_command`
-- `adl_neuso_sidecar_host`
-- `adl_neuso_sidecar_port`
-- `adl_neuso_sidecar_timeout_ms`
+- `--mode golden`：`--mode regression` 的历史兼容 alias，不作为推荐叫法。
+- `--mode fixture`：使用脚本内置 request 验证 NeuSO adapter 和 response contract，不经过 DuckDB。
+- `--mode duckdb-export`：读取 PR5 线性化 export JSON 并适配为 NeuSO request；它不覆盖真实 sidecar round-trip，当前不作为主回归路径。
 
-`duckdb-export` 模式作为未来 SQL -> DuckDB export -> NeuSO request 的验证路径保留。它会启动 DuckDB CLI，创建 12 张小表，打开 R5-style ADL-OPT linearization export setting，执行一个 12-way regular inner join 的 `EXPLAIN`，读取 DuckDB 导出的 join-order JSON，再交给 NeuSO adapter。
-
-命令示例：
+PR5 线性化 export 仍可单独验证：
 
 ```bash
-PYTHONPATH=NeuSO .venv/bin/python scripts/adl_opt/neuso_runtime_bridge_smoke.py \
-  --mode duckdb-export \
-  --duckdb build/reldebug/duckdb \
-  --database /tmp/neuso-runtime-smoke.duckdb \
-  --output /tmp/neuso-runtime-smoke \
-  --device cpu
+rm -f /tmp/adl-opt-linearization.json
+build/reldebug/duckdb < scripts/adl_opt/r5_ikkbz_linearization_smoke.sql
+python3 -m json.tool /tmp/adl-opt-linearization.json
 ```
 
-这个模式要求 DuckDB binary 支持以下 experimental setting：
+完整验证建议：
 
-- `adl_linearize_join_order`
-- `adl_linearization_output`
-- `adl_ikkbz_k`
+```bash
+python3 -m py_compile scripts/adl_opt/neuso_runtime_bridge_smoke.py scripts/adl_opt/neuso_runtime_sidecar.py
+cmake --build build/reldebug --target duckdb --config RelWithDebInfo
+rm -f /tmp/adl-opt-linearization.json
+build/reldebug/duckdb < scripts/adl_opt/r5_ikkbz_linearization_smoke.sql
+PYTHONPATH=NeuSO .venv/bin/python scripts/adl_opt/neuso_runtime_bridge_smoke.py \
+  --mode regression \
+  --duckdb build/reldebug/duckdb \
+  --case-dir scripts/adl_opt/testdata/neuso_runtime_bridge/chain_12 \
+  --device cpu
+git diff --check
+```
 
-如果当前分支或 binary 还没有 R5 export 能力，这个模式会失败并提示使用包含这些 setting 的 DuckDB binary。当前 `fixture` 模式仍然可以用于验证 NeuSO 侧 runtime contract。
-
-### 常见失败原因
+## 常见失败原因
 
 - `ImportError`：没有使用 NeuSO Python 环境，或缺少 PyTorch、PyG、NetworkX。
 - `CUDA was requested`：传了 `--device cuda`，但当前 Python 环境中 `torch.cuda.is_available()` 为 false。
-- Regression response mismatch：NeuSO adapter 输出格式或 order 与 `expected_response.json` 不一致，脚本会打印 unified diff。
-- `Request graph_hash does not match relations/edges`：fixture 中的 graph hash 没有随 relation/edge 修改同步更新。
-- DuckDB setting 报错：当前 DuckDB binary 不包含 R5 export setting。
-- DuckDB 没有写出 JSON：`adl_linearization_output` 没生效，或当前 join 子图不满足导出条件。
+- `Request graph_hash does not match relations/edges`：DuckDB request 的 graph hash 与 runner 重新计算不一致。
+- `Request base_linear_order is not a full relation-id permutation`：PR5 线性化结果没有覆盖当前 join graph 全部 relation。
+- `Response request_id does not match request`：sidecar 返回了旧 response 或错误 response。
+- `Response graph_hash does not match request`：sidecar 返回的 response 不属于当前 join graph。
 - `join_order is not a full relation-id permutation`：NeuSO response 丢失、重复或包含未知 relation id。
 - `join_order append is disconnected`：返回 order 不能解释为合法 single-relation append path。
+- DuckDB setting 报错：当前 binary 不包含 PR5/PR7 experimental settings。
 
 ## 与现有文档的关系
 
-`neuso-adaptation.md` 说明 NeuSO 思想如何迁移到 ADL-OPT。本文档只说明运行时接口边界。
+`docs/design-docs/ikkbz-linearization-export-usage.md` 说明 PR5/R5 IKKBZ linearization export 的用户视角。
 
-`duckdb-join-order-integration.md` 说明 DuckDB join-order optimizer 的整体接入方向。本文档把其中“模型在线推理如何与内核交换信息”单独展开。
+`docs/design-docs/duckdb-join-order-integration.md` 说明 DuckDB join-order optimizer 的整体接入方向。
 
-`feature-and-label-schema.md` 面向离线 JSONL artifact。本文档的 request/response 是运行时实验 wire contract，不等同于离线 artifact schema。
+`docs/design-docs/neuso-adaptation.md` 说明 NeuSO 思想如何迁移到 ADL-OPT。
+
+本文档只说明运行时接口边界：DuckDB 在线优化阶段如何把 join graph 和 base linear order 交给 NeuSO，并如何校验 NeuSO response。
