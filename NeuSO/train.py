@@ -37,7 +37,7 @@ def main(config, exp_name, checkpoint_dir):
         scheduler = CyclicLR(optimizer, base_lr=1e-5, max_lr=1e-2, step_size_up=2000, mode='triangular')
     else:
         raise (ValueError("Invalid scheduler"))
-    
+
     # Prepare trainer
     trainer_cfg = {k: v for k, v in config['trainer'].items() if k != 'save_dir' and k != 'train_test_split'}
     trainer_args = {

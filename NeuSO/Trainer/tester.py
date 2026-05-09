@@ -58,7 +58,7 @@ class Tester(TrainTest):
                 end_time = time.time()
                 results.append((name, torch.exp(predict_log).item(), (end_time-start_time)*1000))
         return results
-    
+
 
     def generate_plans(self):
         self.warm_up_models()

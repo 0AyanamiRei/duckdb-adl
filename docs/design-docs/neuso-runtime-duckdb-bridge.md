@@ -200,7 +200,7 @@ DuckDB 给 NeuSO 的 request 表达当前 join-order 子问题，而不是 SQL �
 - `base_linear_order`：`linear_orders[0]`，来自 `ADLOptJoinLinearizer::Generate()`。
 - `candidate_linear_orders[*].relation_id_order`：所有传入 bridge 的 candidate order；当前 regression 用 `adl_ikkbz_k=1`，因此只有一个候选。
 
-如果没有打开 `adl_linearize_join_order`，`linear_orders` 为空，request 中不会包含 `base_linear_order` 或 `candidate_linear_orders`。当前 regression 会打开该 setting，因此测试 trace 中应当能看到这两个字段。
+`base_linear_order` 是第一版 NeuSO runtime bridge 的硬约束。如果没有打开 `adl_linearize_join_order`，或线性化结果为空，DuckDB 不会发送无 base order 的 request，而是直接报错。当前 regression 会打开该 setting，并要求测试 trace 中必须出现 `base_linear_order` 和非空 `candidate_linear_orders`。
 
 ## Cost 和 Cardinality 边界
 
@@ -386,7 +386,7 @@ scripts/adl_opt/testdata/neuso_runtime_bridge/chain_12/
 `input_request.json` 已删除。当前 request 必须由 DuckDB 真实优化阶段生成，这样测试才能覆盖：
 
 - PR5 `ADLOptJoinLinearizer::Generate()` 是否生成 base order。
-- NeuSO request 是否携带 `base_linear_order` / `candidate_linear_orders`。
+- NeuSO request 是否强制携带 `base_linear_order` / `candidate_linear_orders`。
 - DuckDB sidecar bridge 是否能完成 HTTP JSON request/response。
 - DuckDB C++ response 校验是否通过。
 
@@ -499,6 +499,7 @@ git diff --check
 - `ImportError`：没有使用 NeuSO Python 环境，或缺少 PyTorch、PyG、NetworkX。
 - `CUDA was requested`：传了 `--device cuda`，但当前 Python 环境中 `torch.cuda.is_available()` 为 false。
 - `Request graph_hash does not match relations/edges`：DuckDB request 的 graph hash 与 runner 重新计算不一致。
+- `Request is missing required field: base_linear_order`：DuckDB 没有把 PR5 base order 传给 NeuSO，通常是没有打开 `adl_linearize_join_order` 或线性化失败。
 - `Request base_linear_order is not a full relation-id permutation`：PR5 线性化结果没有覆盖当前 join graph 全部 relation。
 - `Response request_id does not match request`：sidecar 返回了旧 response 或错误 response。
 - `Response graph_hash does not match request`：sidecar 返回的 response 不属于当前 join graph。

@@ -49,7 +49,7 @@ class EncodedQueryGraph:
         self.node_init_feature = None
         self.node_feature = None
         self.edge_feature = None
-    
+
     def load_filter_info(self, filter_path):
         with open(filter_path) as handle:
             for line in handle:

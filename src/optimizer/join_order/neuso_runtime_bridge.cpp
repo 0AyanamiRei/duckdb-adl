@@ -319,6 +319,10 @@ static string BuildGraphHashPayload(idx_t relation_count, vector<GraphHashEdge> 
 static NeuSORequest BuildRequestJSON(QueryGraphManager &query_graph_manager, CostModel &cost_model,
                                      const vector<vector<idx_t>> &linear_orders) {
 	auto relation_count = query_graph_manager.relation_manager.NumRelations();
+	if (linear_orders.empty()) {
+		throw InvalidInputException(
+		    "NeuSO runtime bridge requires at least one PR5 linearization order; enable adl_linearize_join_order");
+	}
 	auto relation_stats = query_graph_manager.relation_manager.GetRelationStats();
 	vector<idx_t> degree(relation_count, 0);
 	vector<string> edge_rows;
@@ -408,10 +412,8 @@ static NeuSORequest BuildRequestJSON(QueryGraphManager &query_graph_manager, Cos
 	request += "}";
 	request += ",\"relations\":[" + StringUtil::Join(relation_rows, ",") + "]";
 	request += ",\"edges\":[" + StringUtil::Join(edge_rows, ",") + "]";
-	if (!linear_orders.empty()) {
-		request += ",\"base_linear_order\":" + JSONIndexArray(linear_orders[0]);
-		request += ",\"candidate_linear_orders\":[" + StringUtil::Join(linear_order_rows, ",") + "]";
-	}
+	request += ",\"base_linear_order\":" + JSONIndexArray(linear_orders[0]);
+	request += ",\"candidate_linear_orders\":[" + StringUtil::Join(linear_order_rows, ",") + "]";
 	request += "}";
 	return {std::move(request), std::move(request_id), std::move(graph_hash)};
 }
@@ -457,28 +459,29 @@ static vector<idx_t> ParseJoinOrder(yyjson_val *root) {
 	return result;
 }
 
-static void ValidateJoinOrder(QueryGraphManager &query_graph_manager, const vector<idx_t> &join_order) {
+static void ValidateRelationOrder(QueryGraphManager &query_graph_manager, const vector<idx_t> &relation_order,
+                                  const char *field_name) {
 	auto relation_count = query_graph_manager.relation_manager.NumRelations();
-	if (join_order.size() != relation_count) {
-		throw InvalidInputException("NeuSO runtime join_order length does not match relation count");
+	if (relation_order.size() != relation_count) {
+		throw InvalidInputException("NeuSO runtime %s length does not match relation count", field_name);
 	}
 	vector<bool> seen(relation_count, false);
-	for (auto relation_id : join_order) {
+	for (auto relation_id : relation_order) {
 		if (relation_id >= relation_count) {
-			throw InvalidInputException("NeuSO runtime join_order contains unknown relation id %llu", relation_id);
+			throw InvalidInputException("NeuSO runtime %s contains unknown relation id %llu", field_name, relation_id);
 		}
 		if (seen[relation_id]) {
-			throw InvalidInputException("NeuSO runtime join_order contains duplicate relation id %llu", relation_id);
+			throw InvalidInputException("NeuSO runtime %s contains duplicate relation id %llu", field_name, relation_id);
 		}
 		seen[relation_id] = true;
 	}
 
-	for (idx_t pos = 1; pos < join_order.size(); pos++) {
-		auto relation_id = join_order[pos];
+	for (idx_t pos = 1; pos < relation_order.size(); pos++) {
+		auto relation_id = relation_order[pos];
 		bool connected = false;
 		auto &relation_set = query_graph_manager.set_manager.GetJoinRelation(RelationIndex(relation_id));
 		for (idx_t previous = 0; previous < pos; previous++) {
-			auto &joined_set = query_graph_manager.set_manager.GetJoinRelation(RelationIndex(join_order[previous]));
+			auto &joined_set = query_graph_manager.set_manager.GetJoinRelation(RelationIndex(relation_order[previous]));
 			auto connections = query_graph_manager.GetQueryGraphEdges().GetConnections(relation_set, joined_set);
 			if (!connections.empty()) {
 				connected = true;
@@ -486,9 +489,20 @@ static void ValidateJoinOrder(QueryGraphManager &query_graph_manager, const vect
 			}
 		}
 		if (!connected) {
-			throw InvalidInputException("NeuSO runtime join_order append is disconnected at relation %llu",
+			throw InvalidInputException("NeuSO runtime %s append is disconnected at relation %llu", field_name,
 			                            relation_id);
 		}
+	}
+}
+
+static void ValidateLinearOrders(QueryGraphManager &query_graph_manager, const vector<vector<idx_t>> &linear_orders) {
+	if (linear_orders.empty()) {
+		throw InvalidInputException(
+		    "NeuSO runtime bridge requires a valid PR5 base linear order before invoking the sidecar");
+	}
+	for (idx_t order_idx = 0; order_idx < linear_orders.size(); order_idx++) {
+		ValidateRelationOrder(query_graph_manager, linear_orders[order_idx],
+		                      order_idx == 0 ? "base_linear_order" : "candidate_linear_orders relation_id_order");
 	}
 }
 
@@ -525,11 +539,12 @@ static void ValidateResponse(const string &response_body, QueryGraphManager &que
 		throw InvalidInputException("NeuSO runtime response graph_hash does not match current request");
 	}
 	auto join_order = ParseJoinOrder(root);
-	ValidateJoinOrder(query_graph_manager, join_order);
+	ValidateRelationOrder(query_graph_manager, join_order, "join_order");
 }
 
 static void InvokeSidecar(QueryGraphManager &query_graph_manager, CostModel &cost_model, const NeuSOConfig &config,
                           const vector<vector<idx_t>> &linear_orders) {
+	ValidateLinearOrders(query_graph_manager, linear_orders);
 	auto request = BuildRequestJSON(query_graph_manager, cost_model, linear_orders);
 	duckdb_httplib::Client client(HTTPBaseURL(config));
 	ConfigureClient(client, config.timeout_ms);

@@ -78,4 +78,3 @@ class TriAT(nn.Module):
         x = self.TriAT_layer_2(x, edge_list, tri_edge_index, edge_attr, flag)
         y = self.pool(x.unsqueeze(0)).squeeze(0)
         return y
-    

@@ -109,6 +109,7 @@ def build_fixture_request() -> dict[str, Any]:
             }
         )
     graph_hash = stable_graph_hash(relations, edges)
+    base_linear_order = list(range(relation_count))
     return {
         "version": 1,
         "request_id": "fixture_chain_12",
@@ -121,6 +122,13 @@ def build_fixture_request() -> dict[str, Any]:
         },
         "relations": relations,
         "edges": edges,
+        "base_linear_order": base_linear_order,
+        "candidate_linear_orders": [
+            {
+                "linear_order_id": "ikkbz_root_0",
+                "relation_id_order": base_linear_order,
+            }
+        ],
     }
 
 
@@ -323,6 +331,20 @@ def adapt_duckdb_export(export: dict[str, Any]) -> dict[str, Any]:
     for relation in relations:
         relation["degree"] = degree[int(relation["relation_id"])]
     graph_hash = stable_graph_hash(relations, edges)
+    linear_orders = export.get("linear_orders", [])
+    if not linear_orders:
+        raise SmokeError("DuckDB export did not contain any linear_orders")
+    candidate_linear_orders = []
+    for idx, item in enumerate(linear_orders):
+        relation_order = item.get("relation_id_order")
+        if relation_order is None:
+            relation_order = item.get("order")
+        candidate_linear_orders.append(
+            {
+                "linear_order_id": item.get("linear_order_id", f"ikkbz_root_{idx}"),
+                "relation_id_order": relation_order,
+            }
+        )
     return {
         "version": 1,
         "request_id": "duckdb_export_smoke",
@@ -335,6 +357,8 @@ def adapt_duckdb_export(export: dict[str, Any]) -> dict[str, Any]:
         },
         "relations": sorted(relations, key=lambda item: int(item["relation_id"])),
         "edges": sorted(edges, key=lambda item: int(item["edge_id"])),
+        "base_linear_order": candidate_linear_orders[0]["relation_id_order"],
+        "candidate_linear_orders": candidate_linear_orders,
     }
 
 
@@ -369,11 +393,17 @@ def validate_request(request: dict[str, Any]) -> None:
             raise SmokeError(f"Request edge references an unknown relation: {left}, {right}")
     if not edges and relation_count > 1:
         raise SmokeError("Request has more than one relation but no join edges")
-    if "base_linear_order" in request:
-        base_order = [int(item) for item in request["base_linear_order"]]
-        if len(base_order) != relation_count or set(base_order) != relation_id_set:
-            raise SmokeError("Request base_linear_order is not a full relation-id permutation")
-    for candidate in request.get("candidate_linear_orders", []):
+    if "base_linear_order" not in request:
+        raise SmokeError("Request is missing required field: base_linear_order")
+    if "candidate_linear_orders" not in request:
+        raise SmokeError("Request is missing required field: candidate_linear_orders")
+    base_order = [int(item) for item in request["base_linear_order"]]
+    if len(base_order) != relation_count or set(base_order) != relation_id_set:
+        raise SmokeError("Request base_linear_order is not a full relation-id permutation")
+    candidates = request["candidate_linear_orders"]
+    if not isinstance(candidates, list) or not candidates:
+        raise SmokeError("Request candidate_linear_orders must be a non-empty list")
+    for candidate in candidates:
         candidate_order = [int(item) for item in candidate["relation_id_order"]]
         if len(candidate_order) != relation_count or set(candidate_order) != relation_id_set:
             raise SmokeError("Request candidate_linear_orders entry is not a full relation-id permutation")

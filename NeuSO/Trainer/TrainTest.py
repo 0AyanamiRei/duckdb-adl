@@ -8,7 +8,7 @@ class TrainTest:
         self.plan_enumerator = PlanEnumerator(self.state_cost_model, self.state_card_model, self.wcoj_cost_model)
         self.device = device
         self.model_to_device()
-    
+
     def model_to_device(self):
         for model in self.models:
             model.to(self.device)

@@ -12,7 +12,7 @@ class ConfigParser:
         self.exp_name = self.config['dataset'] + '_' + str(datetime.now().strftime("%Y-%m-%d-%H-%M"))
         self.save_dir = Path("./saved/" + self.exp_name)
         self.model_save_dir = self.save_dir / 'model'
-        
+
         self.config_model_param()
 
         if self.config['mode'] == 'train' and not test_mode:
@@ -38,4 +38,3 @@ class ConfigParser:
             self.config['model']['query_gnn']['in_dim'] = dataset_indim_map[self.config['data_loader']['dataset']] + 1
 
         self.config['model']['wcoj_cost_model']['in_dim'] = 2*int(self.config['model']['query_gnn']['out_dim'])
-
