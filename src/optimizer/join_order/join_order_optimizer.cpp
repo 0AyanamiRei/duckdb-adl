@@ -6,6 +6,7 @@
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/optimizer/join_order/cost_model.hpp"
 #include "duckdb/optimizer/join_order/adl_opt_join_linearizer.hpp"
+#include "duckdb/optimizer/join_order/neuso_runtime_bridge.hpp"
 #include "duckdb/optimizer/join_order/plan_enumerator.hpp"
 #include "duckdb/planner/expression/list.hpp"
 #include "duckdb/planner/operator/list.hpp"
@@ -97,14 +98,17 @@ static void StoreADLOptJoinLinearization(ClientContext &context, ADLOptJoinLinea
 }
 
 //! Runs the supported regular-inner linearizer for the current reorderable join graph.
-static void ExportADLOptJoinLinearization(ClientContext &context, QueryGraphManager &query_graph_manager,
-                                          CostModel &cost_model) {
+static ADLOptJoinLinearizationResult ExportADLOptJoinLinearization(ClientContext &context,
+                                                                   QueryGraphManager &query_graph_manager,
+                                                                   CostModel &cost_model) {
 	if (!Settings::Get<AdlLinearizeJoinOrderSetting>(context)) {
-		return;
+		return ADLOptJoinLinearizationResult();
 	}
 	auto requested_k = Settings::Get<AdlIkkbzKSetting>(context);
 	auto result = ADLOptJoinLinearizer::Generate(query_graph_manager, cost_model, requested_k);
+	auto bridge_result = result;
 	StoreADLOptJoinLinearization(context, std::move(result));
+	return bridge_result;
 }
 
 JoinOrderOptimizer::JoinOrderOptimizer(ClientContext &context)
@@ -148,11 +152,12 @@ unique_ptr<LogicalOperator> JoinOrderOptimizer::Optimize(unique_ptr<LogicalOpera
 		auto plan_enumerator =
 		    PlanEnumerator(query_graph_manager, cost_model, query_graph_manager.GetQueryGraphEdges());
 
-		// Initialize the leaf/single node plans
-		plan_enumerator.InitLeafPlans();
-		plan_enumerator.SolveJoinOrder();
-		ExportADLOptJoinLinearization(context, query_graph_manager, cost_model);
-		// now reconstruct a logical plan from the query graph plan
+			// Initialize the leaf/single node plans
+			plan_enumerator.InitLeafPlans();
+			auto linearization_result = ExportADLOptJoinLinearization(context, query_graph_manager, cost_model);
+			NeuSORuntimeBridge::InvokeIfEnabled(query_graph_manager, cost_model, linearization_result.linear_orders);
+			plan_enumerator.SolveJoinOrder();
+			// now reconstruct a logical plan from the query graph plan
 		query_graph_manager.plans = &plan_enumerator.GetPlans();
 
 		new_logical_plan = query_graph_manager.Reconstruct(std::move(plan));

@@ -435,6 +435,10 @@ static ADLOptJoinLinearizationResult BuildResult(QueryGraphManager &query_graph_
 	ADLOptJoinLinearizationResult result;
 	result.status = status;
 	result.relation_count = relation_count;
+	result.linear_orders.reserve(orders.size());
+	for (auto &order : orders) {
+		result.linear_orders.push_back(order.relation_order);
+	}
 	result.full_json = JsonToString(doc, root, true);
 	result.summary_json = BuildSummary(status, relation_count, orders.size(), selected_order_id, unsupported_reason);
 	return result;

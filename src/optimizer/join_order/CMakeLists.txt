@@ -1,3 +1,5 @@
+include_directories(../../../third_party/httplib)
+
 add_library_unity(
   duckdb_optimizer_join_order
   OBJECT
@@ -9,6 +11,7 @@ add_library_unity(
   adl_opt_join_linearizer.cpp
   cost_model.cpp
   plan_enumerator.cpp
+  neuso_runtime_bridge.cpp
   relation_manager.cpp
   query_graph_manager.cpp
   relation_statistics_helper.cpp)

@@ -8,6 +8,7 @@
 #pragma once
 
 #include "duckdb/common/string.hpp"
+#include "duckdb/common/vector.hpp"
 #include "duckdb/optimizer/join_order/cost_model.hpp"
 #include "duckdb/optimizer/join_order/plan_enumerator.hpp"
 
@@ -16,6 +17,7 @@ namespace duckdb {
 struct ADLOptJoinLinearizationResult {
 	string status;
 	idx_t relation_count = 0;
+	vector<vector<idx_t>> linear_orders;
 	string summary_json;
 	string full_json;
 };
