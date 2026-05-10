@@ -2,7 +2,7 @@
 
 English TL;DR: Local runners and smoke scripts for ADL-OPT TPC-H, JOB/IMDB, and R5 IKKBZ linearization export checks.
 
-Updated: 2026-05-07
+Updated: 2026-05-10
 
 Key terms: ADL-OPT, offline runner, TPC-H, JOB/IMDB, large join, IKKBZ, JSONL
 
@@ -22,6 +22,36 @@ python3 scripts/adl_opt/offline_large_join_harness.py \
   --queries 29a 29b 29c 28a 28b 28c 33a 33b 33c \
   --random-paths 5
 ```
+
+Classic JOB/IMDB executable benchmark runner. This path expects an existing
+IMDB DuckDB database and verifies the needed tables before running:
+
+```bash
+python3 scripts/adl_opt/job_benchmark_runner.py \
+  --duckdb ./build/reldebug/duckdb \
+  --database /path/to/imdb.duckdb \
+  --output /tmp/adl-opt-runs \
+  --run-id job_r1_smoke \
+  --queries 29a 29b 29c 28a 28b 28c 33a 33b 33c \
+  --execute \
+  --threads 1 \
+  --warmup-runs 1 \
+  --measure-runs 7 \
+  --plan-runs 7
+```
+
+`job_benchmark_runner.py` is the first JOB/IMDB runner that measures real
+DuckDB behavior. It keeps plan latency separate from execution latency:
+`plan_result.jsonl` records SQL-to-`EXPLAIN` wall-clock samples, and
+`run_result.jsonl` records query execution samples, row counts, checksums,
+P50/P95/P99/max, speedup, and sampled-oracle regret. It only selects classic
+JOB queries whose parsed graph is a large connected regular inner pair graph.
+JOBLight is not part of this stage.
+
+For valid `random_endpoint` variants, the runner rewrites the comma-style JOB
+`FROM` list into an explicit `JOIN ... ON ...` tree and sets
+`disabled_optimizers='join_order'`. IKKBZ top-1 and NeuSO runtime variants are
+validation/export variants for now; DuckDB still chooses their final plan.
 
 Build DuckDB with the TPC-H extension while using roughly 75% CPU:
 
@@ -112,8 +142,13 @@ The database is reused when TPC-H tables already exist. Add `--force-reload` to 
 - `transition.jsonl`
 - `decision.jsonl`
 - `run_result.jsonl`
+- `workload.jsonl` for JOB executable benchmark runs
+- `variant.jsonl` for JOB executable benchmark runs
+- `plan_result.jsonl` for JOB executable benchmark runs
+- `correctness.jsonl` for JOB executable benchmark runs
 - `linear_order.jsonl` for large-join endpoint runs
 - `endpoint_path.jsonl` for large-join endpoint runs
+- `traces/` and `profiles/` for executable JOB runs
 - `summary.json`
 - `summary.md`
 
@@ -122,3 +157,8 @@ The schema is documented in `docs/design-docs/feature-and-label-schema.md`.
 `run_result.jsonl` stores latency samples, P50/P95 latency, row count, order-independent checksum, `EXPLAIN` hash, and optional profiling-derived optimizer/execution times.
 
 The large-join Python runner is still static. R5 adds a separate DuckDB kernel export-only path that can write IKKBZ-style linearization candidates for real large-join plans, but it still does not apply those candidates to DuckDB's chosen plan.
+
+The JOB executable runner is deliberately separate from `offline_large_join_harness.py`:
+the static harness remains useful for endpoint-path artifact design, while the
+JOB runner is the place for correctness, SQL-to-plan latency, and physical-plan
+execution latency measurements.
