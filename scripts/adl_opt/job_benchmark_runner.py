@@ -200,7 +200,12 @@ def explicit_join_sql(sql: str, spec: QuerySpec, path: list[str]) -> str:
 
 
 def statement_prefix(args: argparse.Namespace, variant: VariantSpec, trace_file: Path | None = None) -> list[str]:
-    statements = [f"SET threads={args.threads};"]
+    statements = [
+        f"SET temp_directory={sql_string_literal(args.temp_directory)};",
+        f"SET max_temp_directory_size={sql_string_literal(args.max_temp_directory_size)};",
+        f"SET max_memory={sql_string_literal(args.max_memory)};",
+        f"SET threads={args.threads};",
+    ]
     if variant.settings_kind in {"sql_original", "explicit_join_order"}:
         statements.append("SET disabled_optimizers='join_order';")
     elif variant.settings_kind == "ikkbz_top1":
@@ -242,7 +247,7 @@ def session_sql(
         statements.extend(
             [
                 "PRAGMA enable_profiling='json';",
-                f"PRAGMA profiling_output={sql_string_literal(profile_path.as_posix())};",
+                f"PRAGMA profile_output={sql_string_literal(profile_path.as_posix())};",
             ]
         )
     query = query_sql.rstrip().rstrip(";")
@@ -862,6 +867,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--database", default="/tmp/adl-opt-job-imdb.duckdb")
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--threads", type=int, default=1)
+    parser.add_argument(
+        "--temp-directory",
+        help="DuckDB temp directory. Defaults to <database>.tmp-safe when executing.",
+    )
+    parser.add_argument("--max-temp-directory-size", default="8GB")
+    parser.add_argument("--max-memory", default="4GB")
     parser.add_argument("--warmup-runs", type=int, default=1)
     parser.add_argument("--measure-runs", type=int, default=7)
     parser.add_argument("--plan-runs", type=int, default=7)
@@ -880,6 +891,11 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     repo = Path(args.repo).resolve()
+    if args.execute and not args.temp_directory:
+        args.temp_directory = str(Path(args.database).with_suffix(Path(args.database).suffix + ".tmp-safe"))
+    elif not args.temp_directory:
+        args.temp_directory = str((Path(args.output).resolve() / args.run_id / "tmp").resolve())
+    Path(args.temp_directory).mkdir(parents=True, exist_ok=True)
     output_root = Path(args.output).resolve()
     output = output_root if output_root.name == args.run_id else output_root / args.run_id
     output.mkdir(parents=True, exist_ok=True)
@@ -922,6 +938,9 @@ def main() -> None:
         "duckdb": args.duckdb,
         "database": args.database,
         "threads": args.threads,
+        "temp_directory": args.temp_directory,
+        "max_temp_directory_size": args.max_temp_directory_size,
+        "max_memory": args.max_memory,
         "warmup_runs": args.warmup_runs,
         "measure_runs": args.measure_runs,
         "plan_runs": args.plan_runs,

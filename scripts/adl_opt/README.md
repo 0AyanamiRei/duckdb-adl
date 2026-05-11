@@ -35,6 +35,9 @@ python3 scripts/adl_opt/job_benchmark_runner.py \
   --queries 29a 29b 29c 28a 28b 28c 33a 33b 33c \
   --execute \
   --threads 1 \
+  --temp-directory /home/refrain/data/adl-opt/job-imdb/tmp \
+  --max-temp-directory-size 8GB \
+  --max-memory 4GB \
   --warmup-runs 1 \
   --measure-runs 7 \
   --plan-runs 7
@@ -47,6 +50,11 @@ DuckDB behavior. It keeps plan latency separate from execution latency:
 P50/P95/P99/max, speedup, and sampled-oracle regret. It only selects classic
 JOB queries whose parsed graph is a large connected regular inner pair graph.
 JOBLight is not part of this stage.
+
+Executable runs set DuckDB's `temp_directory`, `max_temp_directory_size`, and
+`max_memory` before each `EXPLAIN` or query execution. The defaults are
+`<database>.tmp-safe`, `8GB`, and `4GB`; override them explicitly on small local
+disks so spill files cannot grow until WSL becomes unusable.
 
 For valid `random_endpoint` variants, the runner rewrites the comma-style JOB
 `FROM` list into an explicit `JOIN ... ON ...` tree and sets

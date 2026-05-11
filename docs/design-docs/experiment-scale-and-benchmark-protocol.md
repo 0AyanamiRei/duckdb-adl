@@ -76,12 +76,17 @@ python3 scripts/adl_opt/job_benchmark_runner.py \
   --queries 29a 29b 29c 28a 28b 28c 33a 33b 33c \
   --execute \
   --threads 1 \
+  --temp-directory /home/refrain/data/adl-opt/job-imdb/tmp \
+  --max-temp-directory-size 8GB \
+  --max-memory 4GB \
   --warmup-runs 1 \
   --measure-runs 7 \
   --plan-runs 7
 ```
 
 这个 runner 不负责下载或完整构建 IMDB 数据库；它只验证目标表是否存在，然后执行 selected queries。输出采用 `adl-opt-runs/<run_id>/` 结构，包含 `workload.jsonl`、`variant.jsonl`、`plan_result.jsonl`、`run_result.jsonl`、`correctness.jsonl`、`summary.json/md`、`traces/` 和 `profiles/`。
+
+本地磁盘预算必须显式管控。JOB 查询可能产生很大的 DuckDB temp spill；runner 默认设置 `<database>.tmp-safe`、`max_temp_directory_size=8GB`、`max_memory=4GB`，但正式实验命令仍建议显式传入这些参数，并在每批运行后检查 temp 目录大小。
 
 valid random endpoint path 会被改写成显式 `JOIN ... ON ...` tree，并用 `disabled_optimizers='join_order'` 测量。IKKBZ top-1 和 NeuSO runtime variant 当前只验证导出/sidecar 通路，不把返回 order 应用到最终 plan。
 

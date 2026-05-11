@@ -43,6 +43,9 @@ python3 scripts/adl_opt/job_benchmark_runner.py \
   --queries 29a 29b 29c 28a 28b 28c 33a 33b 33c \
   --execute \
   --threads 1 \
+  --temp-directory /home/refrain/data/adl-opt/job-imdb/tmp \
+  --max-temp-directory-size 8GB \
+  --max-memory 4GB \
   --warmup-runs 1 \
   --measure-runs 7 \
   --plan-runs 7
@@ -66,6 +69,8 @@ adl-opt-runs/<run_id>/
 ```
 
 `plan_result.jsonl` 记录 `EXPLAIN` wall-clock，用来近似 SQL 到物理 plan 的端到端开销。`run_result.jsonl` 记录真实执行的 wall-clock，用来代表 plan quality。
+
+为了保护本地 WSL 磁盘，executable runner 默认给 DuckDB 设置受控 temp 目录、`max_temp_directory_size=8GB`、`max_memory=4GB`。每批 benchmark 后都应该检查 temp 目录；如果出现 timeout 或手动中断，先确认没有 DuckDB 进程再清理遗留 temp 文件。
 
 valid random endpoint path 会被改写成显式 `JOIN ... ON ...` tree，并通过 `disabled_optimizers='join_order'` 尝试固定执行。IKKBZ top-1 和 NeuSO runtime variant 当前只打开验证/导出 setting，DuckDB 仍选择最终 plan。
 
