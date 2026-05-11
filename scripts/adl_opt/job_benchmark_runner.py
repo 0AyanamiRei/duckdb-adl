@@ -42,6 +42,13 @@ from offline_large_join_harness import (
 UPDATED = "2026-05-12"
 WORKLOAD = "job_imdb"
 DEFAULT_RUN_ID = "job_imdb_benchmark"
+BASELINE_KINDS = {
+    "duckdb_default",
+    "sql_original",
+    "ikkbz_top1_export",
+    "neuso_runtime_validate",
+    "random_endpoint",
+}
 
 PROFILE_PHASE_KEYS = {
     "parser_time_ms": ("parser",),
@@ -484,6 +491,13 @@ def variant_row(variant: VariantSpec) -> dict:
         "covered_alias_count": variant.covered_alias_count,
         "updated": UPDATED,
     }
+
+
+def filter_variants(variants: list[VariantSpec], baseline_kinds: list[str]) -> list[VariantSpec]:
+    if "all" in baseline_kinds:
+        return variants
+    selected = set(baseline_kinds)
+    return [variant for variant in variants if variant.baseline_kind in selected]
 
 
 def query_graph_row(spec: QuerySpec, threshold: int) -> dict:
@@ -1073,6 +1087,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--queries", nargs="+", default=list(DEFAULT_QUERIES))
     parser.add_argument("--large-join-threshold", type=int, default=12)
     parser.add_argument("--random-endpoint-paths", type=int, default=5)
+    parser.add_argument(
+        "--baseline-kinds",
+        nargs="+",
+        default=["all"],
+        choices=["all", *sorted(BASELINE_KINDS)],
+        help="Variant families to execute. Use duckdb_default for a default-optimizer-only run.",
+    )
     parser.add_argument("--seed", type=int, default=20260510)
     parser.add_argument("--duckdb", help="DuckDB CLI/binary path")
     parser.add_argument("--database", default="/tmp/adl-opt-job-imdb.duckdb")
@@ -1124,11 +1145,14 @@ def main() -> None:
     ]
     query_graph_rows = [query_graph_row(spec, args.large_join_threshold) for spec in selected_specs]
     variants_by_query = {
-        spec.query_id: build_variants(
-            spec,
-            random_endpoint_paths=args.random_endpoint_paths,
-            seed=args.seed,
-            include_neuso=args.include_neuso,
+        spec.query_id: filter_variants(
+            build_variants(
+                spec,
+                random_endpoint_paths=args.random_endpoint_paths,
+                seed=args.seed,
+                include_neuso=args.include_neuso,
+            ),
+            args.baseline_kinds,
         )
         for spec in selected_specs
     }
@@ -1145,6 +1169,7 @@ def main() -> None:
         "queries": args.queries,
         "selected_queries": [spec.workload_query for spec in selected_specs],
         "large_join_threshold": args.large_join_threshold,
+        "baseline_kinds": args.baseline_kinds,
         "execute": args.execute,
         "duckdb": args.duckdb,
         "database": args.database,

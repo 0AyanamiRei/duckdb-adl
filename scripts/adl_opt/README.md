@@ -34,6 +34,7 @@ python3 scripts/adl_opt/job_benchmark_runner.py \
   --run-id job_r1_smoke \
   --queries 29a 29b 29c 28a 28b 28c 33a 33b 33c \
   --execute \
+  --baseline-kinds duckdb_default \
   --threads 1 \
   --temp-directory /home/refrain/data/adl-opt/job-imdb/tmp \
   --max-temp-directory-size 8GB \
@@ -53,6 +54,10 @@ P50/P95/P99/max, speedup, and sampled-oracle regret. External DuckDB process
 wall-clock is kept only as a diagnostic field. The runner only selects classic
 JOB queries whose parsed graph is a large connected regular inner pair graph.
 JOBLight is not part of this stage.
+
+Use `--baseline-kinds duckdb_default` for a clean DuckDB default optimizer run.
+The default `--baseline-kinds all` keeps the full runner behavior and emits the
+other configured validation/baseline variants as well.
 
 Executable runs set DuckDB's `temp_directory`, `max_temp_directory_size`, and
 `max_memory` before each `EXPLAIN` or query execution. The defaults are
