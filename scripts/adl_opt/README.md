@@ -44,10 +44,13 @@ python3 scripts/adl_opt/job_benchmark_runner.py \
 ```
 
 `job_benchmark_runner.py` is the first JOB/IMDB runner that measures real
-DuckDB behavior. It keeps plan latency separate from execution latency:
-`plan_result.jsonl` records SQL-to-`EXPLAIN` wall-clock samples, and
-`run_result.jsonl` records query execution samples, row counts, checksums,
-P50/P95/P99/max, speedup, and sampled-oracle regret. It only selects classic
+DuckDB behavior. It keeps SQL-to-plan time separate from physical execution
+time using DuckDB detailed profiling. `plan_result.jsonl` records parser,
+planner, optimizer, join-order optimizer, and physical planner timing.
+`run_result.jsonl` records physical execution samples computed as profile
+latency minus profiled plan phases, plus row counts, checksums,
+P50/P95/P99/max, speedup, and sampled-oracle regret. External DuckDB process
+wall-clock is kept only as a diagnostic field. The runner only selects classic
 JOB queries whose parsed graph is a large connected regular inner pair graph.
 JOBLight is not part of this stage.
 
@@ -162,7 +165,7 @@ The database is reused when TPC-H tables already exist. Add `--force-reload` to 
 
 The schema is documented in `docs/design-docs/feature-and-label-schema.md`.
 
-`run_result.jsonl` stores latency samples, P50/P95 latency, row count, order-independent checksum, `EXPLAIN` hash, and optional profiling-derived optimizer/execution times.
+`run_result.jsonl` stores physical execution latency samples, P50/P95/P99/max latency, row count, order-independent checksum, `EXPLAIN` hash, and detailed-profile optimizer/execution timings. For JOB/IMDB, external DuckDB process wall-clock is diagnostic only.
 
 The large-join Python runner is still static. R5 adds a separate DuckDB kernel export-only path that can write IKKBZ-style linearization candidates for real large-join plans, but it still does not apply those candidates to DuckDB's chosen plan.
 

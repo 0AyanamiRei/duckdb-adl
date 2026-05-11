@@ -60,7 +60,7 @@ python3 scripts/adl_opt/job_benchmark_runner.py \
   --plan-runs 7
 ```
 
-The JOB runner expects a prepared classic IMDB DuckDB database. It does not download data, and JOBLight is not part of this stage.
+The JOB runner expects a prepared classic IMDB DuckDB database. It does not download data, and JOBLight is not part of this stage. JOB/IMDB plan and execution latency fields come from DuckDB detailed profiling, not from per-query subprocess wall-clock. The runner keeps a diagnostic `duckdb_wall_time_samples_ms` field, but benchmark comparisons should use `plan_latency_*` and `execution_latency_*`.
 
 Do not commit large generated databases, model checkpoints, or raw profiling dumps unless a plan explicitly says they are curated fixtures.
 
@@ -73,7 +73,7 @@ Each `summary.md` should include:
 - Correctness failures.
 - Plan-control failures.
 - Timeout count.
-- Plan latency P50/P95/P99/max.
-- Execution latency P50/P95/P99/max.
+- Plan latency P50/P95/P99/max from DuckDB detailed profiling.
+- Physical execution latency P50/P95/P99/max from DuckDB detailed profiling.
 - Optimizer time and execution time.
 - Speedup/regret against DuckDB default and sampled oracle where available.

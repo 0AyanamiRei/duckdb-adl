@@ -183,8 +183,10 @@ Random order 数量按轮次递增：
 
 JOB/IMDB 主测评拆成两类 latency：
 
-- Plan latency: 对每个 query/variant 执行 `EXPLAIN <query>` 7 次，用 wall-clock 记录 SQL 输入到拿到物理 plan/EXPLAIN 输出的端到端开销。
-- Execution latency: 对每个 query/variant warmup 1 次、measure 7 次，实际执行查询，用物理 plan 的执行时长代表 plan quality。
+- Plan latency: 对每个 query/variant 执行 `EXPLAIN <query>`，但正式指标来自 DuckDB detailed profiling 中的 parser、planner、optimizer、physical planner 阶段时间，不使用外部子进程 wall-clock。
+- Execution latency: 对每个 query/variant warmup 1 次、measure 7 次，正式指标来自 DuckDB detailed profiling 的 `latency - plan phases`，用 physical execution 时间代表 plan quality。
+
+runner 会把同一个 variant 的 warmup/measure 放在同一个 DuckDB CLI session 里执行。`duckdb_wall_time_samples_ms` 只作为诊断字段，不能作为论文主结果。
 
 每次运行必须记录：
 
@@ -198,8 +200,8 @@ JOB/IMDB 主测评拆成两类 latency：
 - timeout
 - plan latency samples and P50/P95/P99/max
 - execution latency samples and P50/P95/P99/max
-- optimizer time if available
-- execution time if available
+- optimizer time from detailed profiling if available
+- physical execution time from detailed profiling if available
 - EXPLAIN hash
 - result row count
 - result checksum

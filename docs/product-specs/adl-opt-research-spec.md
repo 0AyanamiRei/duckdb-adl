@@ -117,8 +117,8 @@ The first classic JOB/IMDB benchmark is accepted when:
 
 - 29a/29b/29c, 28a/28b/28c, and 33a/33b/33c are parsed and filtered through the `n >= 12` regular inner pair graph gate.
 - DuckDB default has row count and checksum for each selected query.
-- Each executable variant reports plan latency P50/P95/P99/max from `EXPLAIN`.
-- Each executable variant reports execution latency P50/P95/P99/max from measured query runs.
+- Each executable variant reports SQL-to-plan latency P50/P95/P99/max from DuckDB detailed profiling.
+- Each executable variant reports physical execution latency P50/P95/P99/max from DuckDB detailed profiling.
 - Correctness failures and timeouts are explicitly counted.
 - Speedup/regret only use correct, non-timeout runs.
 

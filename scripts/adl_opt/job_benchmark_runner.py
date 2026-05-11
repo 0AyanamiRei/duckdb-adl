@@ -2,10 +2,10 @@
 """Executable ADL-OPT benchmark runner for classic JOB/IMDB queries.
 
 The runner keeps the executable JOB benchmark separate from the static
-large-join artifact generator. It measures two surfaces:
+large-join artifact generator. It measures two DuckDB-internal surfaces:
 
-* plan latency: SQL -> EXPLAIN/physical-plan output wall-clock time
-* plan quality proxy: query execution wall-clock time with correctness checks
+* plan latency: SQL -> logical/optimized/physical plan time from detailed profiling
+* plan quality proxy: physical execution time from detailed profiling
 
 The first version does not force IKKBZ/NeuSO choices back into DuckDB. Valid
 random endpoint paths are applied through an explicit JOIN tree plus
@@ -39,9 +39,21 @@ from offline_large_join_harness import (
 )
 
 
-UPDATED = "2026-05-10"
+UPDATED = "2026-05-12"
 WORKLOAD = "job_imdb"
 DEFAULT_RUN_ID = "job_imdb_benchmark"
+
+PROFILE_PHASE_KEYS = {
+    "parser_time_ms": ("parser",),
+    "planner_time_ms": ("planner",),
+    "planner_binding_time_ms": ("planner_binding",),
+    "optimizer_time_ms": ("all_optimizers", "cumulative_optimizer_timing"),
+    "join_order_optimizer_time_ms": ("optimizer_join_order",),
+    "physical_planner_time_ms": ("physical_planner",),
+    "physical_planner_create_plan_time_ms": ("physical_planner_create_plan",),
+    "query_latency_ms": ("latency",),
+    "execution_cpu_time_ms": ("cpu_time",),
+}
 
 
 @dataclass(frozen=True)
@@ -247,6 +259,7 @@ def session_sql(
         statements.extend(
             [
                 "PRAGMA enable_profiling='json';",
+                "SET profiling_mode='detailed';",
                 f"PRAGMA profile_output={sql_string_literal(profile_path.as_posix())};",
             ]
         )
@@ -261,23 +274,82 @@ def sql_for_variant(sql: str, spec: QuerySpec, variant: VariantSpec) -> str:
     return sql
 
 
-def profile_metrics(profile_path: Path) -> tuple[float | None, float | None]:
+def copy_query_to_csv_statement(query_sql: str, output_path: Path) -> str:
+    query = query_sql.rstrip().rstrip(";")
+    return (
+        f"COPY ({query}) TO {sql_string_literal(output_path.as_posix())} "
+        "(HEADER, DELIMITER ',');"
+    )
+
+
+def profile_time_ms(data: dict, keys: tuple[str, ...]) -> float | None:
+    for key in keys:
+        value = data.get(key)
+        if isinstance(value, (int, float)):
+            return float(value) * 1000.0
+    return None
+
+
+def detailed_profile_metrics(profile_path: Path) -> dict[str, float | bool | str | None]:
+    result: dict[str, float | bool | str | None] = {
+        "profile_available": False,
+        "profile_parse_error": None,
+    }
+    for field in PROFILE_PHASE_KEYS:
+        result[field] = None
+    result["qo_plan_time_ms"] = None
+    result["physical_execution_time_ms"] = None
     if not profile_path.exists():
-        return None, None
+        result["profile_parse_error"] = "profile_missing"
+        return result
     try:
         data = json.loads(profile_path.read_text())
     except json.JSONDecodeError:
-        return None, None
-    optimizer_time = None
-    execution_time = None
-    if isinstance(data, dict):
-        latency = data.get("latency")
-        if isinstance(latency, (int, float)):
-            execution_time = float(latency) * 1000 if latency < 1000 else float(latency)
-        optimizer = data.get("optimizer_time")
-        if isinstance(optimizer, (int, float)):
-            optimizer_time = float(optimizer) * 1000 if optimizer < 1000 else float(optimizer)
-    return optimizer_time, execution_time
+        result["profile_parse_error"] = "profile_json_decode_error"
+        return result
+    if not isinstance(data, dict):
+        result["profile_parse_error"] = "profile_not_object"
+        return result
+
+    result["profile_available"] = True
+    for field, keys in PROFILE_PHASE_KEYS.items():
+        result[field] = profile_time_ms(data, keys)
+
+    qo_parts = [
+        result["parser_time_ms"],
+        result["planner_time_ms"],
+        result["optimizer_time_ms"],
+        result["physical_planner_time_ms"],
+    ]
+    if any(isinstance(value, (int, float)) for value in qo_parts):
+        result["qo_plan_time_ms"] = sum(
+            float(value) for value in qo_parts if isinstance(value, (int, float))
+        )
+
+    latency = result["query_latency_ms"]
+    qo_plan_time = result["qo_plan_time_ms"]
+    if isinstance(latency, (int, float)) and isinstance(qo_plan_time, (int, float)):
+        result["physical_execution_time_ms"] = max(0.0, float(latency) - float(qo_plan_time))
+    return result
+
+
+def numeric_metric(metrics: dict[str, float | bool | str | None], key: str) -> float | None:
+    value = metrics.get(key)
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def collect_metric_sample(
+    buckets: dict[str, list[float]],
+    metrics: dict[str, float | bool | str | None],
+    key: str,
+) -> None:
+    value = numeric_metric(metrics, key)
+    if value is not None:
+        buckets.setdefault(key, []).append(value)
+
+
+def p50_metric(buckets: dict[str, list[float]], key: str) -> float | None:
+    return percentile(buckets.get(key, []), 0.50)
 
 
 def table_exists_sql(tables: Iterable[str]) -> str:
@@ -507,16 +579,28 @@ def skipped_plan_result(spec: QuerySpec, variant: VariantSpec, reason: str) -> d
         "query_id": spec.query_id,
         "variant_id": variant.variant_id,
         "baseline_kind": variant.baseline_kind,
+        "measurement_source": "duckdb_detailed_profile",
         "plan_latency_samples_ms": [],
         "plan_latency_p50_ms": None,
         "plan_latency_p95_ms": None,
         "plan_latency_p99_ms": None,
         "plan_latency_max_ms": None,
+        "qo_plan_time_samples_ms": [],
+        "duckdb_wall_time_samples_ms": [],
+        "parser_time_p50_ms": None,
+        "planner_time_p50_ms": None,
+        "planner_binding_time_p50_ms": None,
+        "optimizer_time_p50_ms": None,
+        "join_order_optimizer_time_p50_ms": None,
+        "physical_planner_time_p50_ms": None,
+        "physical_planner_create_plan_time_p50_ms": None,
         "explain_hash": None,
         "physical_plan_available": False,
         "sidecar_latency_ms": None,
         "model_latency_ms": None,
         "optimizer_time_ms": None,
+        "profile_available": False,
+        "profile_parse_error": None,
         "failure_reason": reason,
     }
 
@@ -539,11 +623,27 @@ def skipped_run_result(spec: QuerySpec, variant: VariantSpec, reason: str) -> di
         "execution_latency_p95_ms": None,
         "execution_latency_p99_ms": None,
         "execution_latency_max_ms": None,
+        "measurement_source": "duckdb_detailed_profile",
+        "duckdb_wall_time_samples_ms": [],
+        "query_latency_samples_ms": [],
+        "qo_plan_time_samples_ms": [],
+        "execution_cpu_time_samples_ms": [],
+        "parser_time_samples_ms": [],
+        "planner_time_samples_ms": [],
+        "planner_binding_time_samples_ms": [],
+        "optimizer_time_samples_ms": [],
+        "join_order_optimizer_time_samples_ms": [],
+        "physical_planner_time_samples_ms": [],
+        "physical_planner_create_plan_time_samples_ms": [],
         "optimizer_time_ms": None,
+        "join_order_optimizer_time_ms": None,
+        "qo_plan_time_ms": None,
         "execution_time_ms": None,
         "speedup_vs_default": None,
         "regret_vs_sampled_oracle": None,
         "timeout": False,
+        "profile_available": False,
+        "profile_parse_error": None,
         "failure_reason": reason,
     }
 
@@ -555,6 +655,7 @@ def measure_plan_latency(
     spec: QuerySpec,
     variant: VariantSpec,
     args: argparse.Namespace,
+    profiles_dir: Path,
     traces_dir: Path,
 ) -> dict:
     if not variant.executable:
@@ -563,45 +664,59 @@ def measure_plan_latency(
         variant_sql = sql_for_variant(sql, spec, variant)
     except ValueError as exc:
         return skipped_plan_result(spec, variant, str(exc))
-    samples: list[float] = []
+    wall_samples: list[float] = []
     last_out = ""
     trace_file = traces_dir / f"{variant.variant_id.replace(':', '_')}_plan_trace.json"
     try:
+        statements = statement_prefix(args, variant, trace_file=trace_file)
+        query = variant_sql.rstrip().rstrip(";")
         for _ in range(args.plan_runs):
-            code, out, err, latency_ms = duckdb_run(
-                duckdb,
-                database,
-                session_sql(variant_sql, args, variant, explain=True, trace_file=trace_file),
-                args.timeout,
-                csv_output=False,
-            )
-            samples.append(latency_ms)
-            last_out = out
-            if code != 0:
-                return {
-                    **skipped_plan_result(spec, variant, err.strip() or "EXPLAIN failed"),
-                    "plan_latency_samples_ms": samples,
-                }
+            statements.append(f"EXPLAIN {query};")
+        code, out, err, latency_ms = duckdb_run(
+            duckdb,
+            database,
+            "\n".join(statements),
+            args.timeout * max(1, args.plan_runs),
+            csv_output=False,
+        )
+        wall_samples.append(latency_ms)
+        last_out = out
+        if code != 0:
+            return {
+                **skipped_plan_result(spec, variant, err.strip() or "EXPLAIN failed"),
+                "duckdb_wall_time_samples_ms": wall_samples,
+            }
     except subprocess.TimeoutExpired:
         return {
             **skipped_plan_result(spec, variant, "timeout"),
-            "plan_latency_samples_ms": samples,
+            "duckdb_wall_time_samples_ms": wall_samples,
         }
-    stats = latency_stats(samples)
     return {
         "query_id": spec.query_id,
         "variant_id": variant.variant_id,
         "baseline_kind": variant.baseline_kind,
-        "plan_latency_samples_ms": samples,
-        "plan_latency_p50_ms": stats["p50_ms"],
-        "plan_latency_p95_ms": stats["p95_ms"],
-        "plan_latency_p99_ms": stats["p99_ms"],
-        "plan_latency_max_ms": stats["max_ms"],
+        "measurement_source": "duckdb_detailed_profile",
+        "plan_latency_samples_ms": [],
+        "plan_latency_p50_ms": None,
+        "plan_latency_p95_ms": None,
+        "plan_latency_p99_ms": None,
+        "plan_latency_max_ms": None,
+        "qo_plan_time_samples_ms": [],
+        "duckdb_wall_time_samples_ms": wall_samples,
+        "parser_time_p50_ms": None,
+        "planner_time_p50_ms": None,
+        "planner_binding_time_p50_ms": None,
+        "optimizer_time_p50_ms": None,
+        "join_order_optimizer_time_p50_ms": None,
+        "physical_planner_time_p50_ms": None,
+        "physical_planner_create_plan_time_p50_ms": None,
         "explain_hash": sha256_text(last_out),
         "physical_plan_available": True,
         "sidecar_latency_ms": None,
         "model_latency_ms": read_trace_latency(trace_file),
         "optimizer_time_ms": None,
+        "profile_available": False,
+        "profile_parse_error": "filled_from_execution_profile",
         "failure_reason": None,
     }
 
@@ -616,6 +731,44 @@ def read_trace_latency(trace_file: Path) -> float | None:
     response = trace.get("response") if isinstance(trace, dict) else None
     latency = response.get("latency_ms") if isinstance(response, dict) else None
     return float(latency) if isinstance(latency, (int, float)) else None
+
+
+def fill_plan_result_from_execution_profile(plan_row: dict, run_row: dict) -> dict:
+    if plan_row.get("failure_reason") is not None:
+        return plan_row
+    samples = list(run_row.get("qo_plan_time_samples_ms") or [])
+    stats = latency_stats(samples)
+    plan_row.update(
+        {
+            "plan_latency_samples_ms": samples,
+            "plan_latency_p50_ms": stats["p50_ms"],
+            "plan_latency_p95_ms": stats["p95_ms"],
+            "plan_latency_p99_ms": stats["p99_ms"],
+            "plan_latency_max_ms": stats["max_ms"],
+            "qo_plan_time_samples_ms": samples,
+            "parser_time_p50_ms": percentile(run_row.get("parser_time_samples_ms") or [], 0.50),
+            "planner_time_p50_ms": percentile(run_row.get("planner_time_samples_ms") or [], 0.50),
+            "planner_binding_time_p50_ms": percentile(
+                run_row.get("planner_binding_time_samples_ms") or [], 0.50
+            ),
+            "optimizer_time_p50_ms": percentile(
+                run_row.get("optimizer_time_samples_ms") or [], 0.50
+            ),
+            "join_order_optimizer_time_p50_ms": percentile(
+                run_row.get("join_order_optimizer_time_samples_ms") or [], 0.50
+            ),
+            "physical_planner_time_p50_ms": percentile(
+                run_row.get("physical_planner_time_samples_ms") or [], 0.50
+            ),
+            "physical_planner_create_plan_time_p50_ms": percentile(
+                run_row.get("physical_planner_create_plan_time_samples_ms") or [], 0.50
+            ),
+            "optimizer_time_ms": run_row.get("optimizer_time_ms"),
+            "profile_available": bool(samples),
+            "profile_parse_error": None if samples else run_row.get("profile_parse_error"),
+        }
+    )
+    return plan_row
 
 
 def measure_execution(
@@ -636,55 +789,93 @@ def measure_execution(
         return skipped_run_result(spec, variant, str(exc))
     trace_file = traces_dir / f"{variant.variant_id.replace(':', '_')}_run_trace.json"
     try:
-        for _ in range(args.warmup_runs):
-            duckdb_run(
-                duckdb,
-                database,
-                session_sql(variant_sql, args, variant, explain=False, trace_file=trace_file),
-                args.timeout,
-                csv_output=True,
-            )
         samples: list[float] = []
-        optimizer_times: list[float] = []
-        profile_execution_times: list[float] = []
+        wall_samples: list[float] = []
+        query_latency_samples: list[float] = []
+        qo_plan_samples: list[float] = []
+        execution_cpu_samples: list[float] = []
+        metric_buckets: dict[str, list[float]] = {}
         last_code = 0
-        last_out = ""
         last_err = ""
+        last_profile_error = None
+        results_dir = profiles_dir / "results"
+        results_dir.mkdir(exist_ok=True)
+        statements = statement_prefix(args, variant, trace_file=trace_file)
+        created_result_paths: list[Path] = []
+        query_statement = variant_sql.rstrip().rstrip(";") + ";"
+        for warmup_idx in range(args.warmup_runs):
+            statements.append(query_statement)
+        statements.extend(["SET profiling_mode='detailed';", "PRAGMA enable_profiling='json';"])
+        profile_paths: list[Path] = []
         for run_idx in range(args.measure_runs):
             profile_path = profiles_dir / f"{variant.variant_id.replace(':', '_')}_run{run_idx}.json"
             if profile_path.exists():
                 profile_path.unlink()
-            last_code, last_out, last_err, latency_ms = duckdb_run(
-                duckdb,
-                database,
-                session_sql(
-                    variant_sql,
-                    args,
-                    variant,
-                    explain=False,
-                    profile_path=profile_path,
-                    trace_file=trace_file,
-                ),
-                args.timeout,
-                csv_output=True,
-            )
-            samples.append(latency_ms)
-            optimizer_time, profile_execution_time = profile_metrics(profile_path)
-            if optimizer_time is not None:
-                optimizer_times.append(optimizer_time)
-            if profile_execution_time is not None:
-                profile_execution_times.append(profile_execution_time)
-            if last_code != 0:
-                return {
-                    **skipped_run_result(spec, variant, last_err.strip() or "execution failed"),
-                    "execution_latency_samples_ms": samples,
-                }
+            profile_paths.append(profile_path)
+            statements.append(f"PRAGMA profile_output={sql_string_literal(profile_path.as_posix())};")
+            statements.append(query_statement)
+        checksum_path = results_dir / f"{variant.variant_id.replace(':', '_')}_checksum.csv"
+        if checksum_path.exists():
+            checksum_path.unlink()
+        created_result_paths.append(checksum_path)
+        statements.append("PRAGMA disable_profiling;")
+        statements.append(copy_query_to_csv_statement(variant_sql, checksum_path))
+        last_code, _out, last_err, latency_ms = duckdb_run(
+            duckdb,
+            database,
+            "\n".join(statements),
+            args.timeout * max(1, args.warmup_runs + args.measure_runs),
+            csv_output=False,
+        )
+        wall_samples.append(latency_ms)
+        if last_code != 0:
+            return {
+                **skipped_run_result(spec, variant, last_err.strip() or "execution failed"),
+                "execution_latency_samples_ms": samples,
+                "duckdb_wall_time_samples_ms": wall_samples,
+                "query_latency_samples_ms": query_latency_samples,
+                "qo_plan_time_samples_ms": qo_plan_samples,
+                "execution_cpu_time_samples_ms": execution_cpu_samples,
+            }
+        for profile_path in profile_paths:
+            metrics = detailed_profile_metrics(profile_path)
+            last_profile_error = metrics.get("profile_parse_error")
+            collect_metric_sample(metric_buckets, metrics, "optimizer_time_ms")
+            collect_metric_sample(metric_buckets, metrics, "join_order_optimizer_time_ms")
+            collect_metric_sample(metric_buckets, metrics, "physical_execution_time_ms")
+            collect_metric_sample(metric_buckets, metrics, "qo_plan_time_ms")
+            collect_metric_sample(metric_buckets, metrics, "query_latency_ms")
+            collect_metric_sample(metric_buckets, metrics, "execution_cpu_time_ms")
+            collect_metric_sample(metric_buckets, metrics, "parser_time_ms")
+            collect_metric_sample(metric_buckets, metrics, "planner_time_ms")
+            collect_metric_sample(metric_buckets, metrics, "planner_binding_time_ms")
+            collect_metric_sample(metric_buckets, metrics, "physical_planner_time_ms")
+            collect_metric_sample(metric_buckets, metrics, "physical_planner_create_plan_time_ms")
+            execution_sample = numeric_metric(metrics, "physical_execution_time_ms")
+            query_latency_sample = numeric_metric(metrics, "query_latency_ms")
+            qo_plan_sample = numeric_metric(metrics, "qo_plan_time_ms")
+            cpu_sample = numeric_metric(metrics, "execution_cpu_time_ms")
+            if execution_sample is not None:
+                samples.append(execution_sample)
+            if query_latency_sample is not None:
+                query_latency_samples.append(query_latency_sample)
+            if qo_plan_sample is not None:
+                qo_plan_samples.append(qo_plan_sample)
+            if cpu_sample is not None:
+                execution_cpu_samples.append(cpu_sample)
     except subprocess.TimeoutExpired:
         return {
             **skipped_run_result(spec, variant, "timeout"),
             "timeout": True,
         }
-    row_count, checksum = result_checksum(last_out)
+    if not checksum_path.exists():
+        return skipped_run_result(spec, variant, "result_csv_missing")
+    row_count, checksum = result_checksum(checksum_path.read_text())
+    for result_path in created_result_paths:
+        try:
+            result_path.unlink()
+        except FileNotFoundError:
+            pass
     stats = latency_stats(samples)
     return {
         "query_id": spec.query_id,
@@ -703,11 +894,31 @@ def measure_execution(
         "execution_latency_p95_ms": stats["p95_ms"],
         "execution_latency_p99_ms": stats["p99_ms"],
         "execution_latency_max_ms": stats["max_ms"],
-        "optimizer_time_ms": percentile(optimizer_times, 0.50),
-        "execution_time_ms": percentile(profile_execution_times, 0.50),
+        "measurement_source": "duckdb_detailed_profile",
+        "duckdb_wall_time_samples_ms": wall_samples,
+        "query_latency_samples_ms": query_latency_samples,
+        "qo_plan_time_samples_ms": qo_plan_samples,
+        "execution_cpu_time_samples_ms": execution_cpu_samples,
+        "parser_time_samples_ms": metric_buckets.get("parser_time_ms", []),
+        "planner_time_samples_ms": metric_buckets.get("planner_time_ms", []),
+        "planner_binding_time_samples_ms": metric_buckets.get("planner_binding_time_ms", []),
+        "optimizer_time_samples_ms": metric_buckets.get("optimizer_time_ms", []),
+        "join_order_optimizer_time_samples_ms": metric_buckets.get(
+            "join_order_optimizer_time_ms", []
+        ),
+        "physical_planner_time_samples_ms": metric_buckets.get("physical_planner_time_ms", []),
+        "physical_planner_create_plan_time_samples_ms": metric_buckets.get(
+            "physical_planner_create_plan_time_ms", []
+        ),
+        "optimizer_time_ms": p50_metric(metric_buckets, "optimizer_time_ms"),
+        "join_order_optimizer_time_ms": p50_metric(metric_buckets, "join_order_optimizer_time_ms"),
+        "qo_plan_time_ms": percentile(qo_plan_samples, 0.50),
+        "execution_time_ms": percentile(samples, 0.50),
         "speedup_vs_default": None,
         "regret_vs_sampled_oracle": None,
         "timeout": False,
+        "profile_available": bool(samples),
+        "profile_parse_error": None if samples else last_profile_error,
         "failure_reason": None,
     }
 
@@ -847,8 +1058,8 @@ def write_summary_md(output: Path, summary: dict) -> None:
         f"- Correctness failures: {summary['correctness_failures']}",
         f"- Timeout count: {summary['timeout_count']}",
         f"- Fallback/skipped variants: {summary['fallback_count']}",
-        f"- Plan latency P50/P95/P99/max ms: {summary['plan_latency']}",
-        f"- Execution latency P50/P95/P99/max ms: {summary['execution_latency']}",
+        f"- Plan latency P50/P95/P99/max ms: {summary['plan_latency']} (DuckDB detailed profiling)",
+        f"- Physical execution latency P50/P95/P99/max ms: {summary['execution_latency']} (profile latency minus plan phases)",
         f"- Plan quality: {summary['plan_quality']}",
     ]
     (output / "summary.md").write_text("\n".join(lines) + "\n")
@@ -947,6 +1158,9 @@ def main() -> None:
         "timeout": args.timeout,
         "include_neuso": args.include_neuso,
         "joblight": "not_used",
+        "measurement_source": "duckdb_detailed_profile",
+        "plan_latency_semantics": "SQL parser/planner/optimizer/physical-planner timing from detailed profiling",
+        "execution_latency_semantics": "DuckDB profile latency minus profiled plan phases",
     }
     (output / "run_config.json").write_text(json.dumps(run_config, indent=2, sort_keys=True) + "\n")
 
@@ -963,12 +1177,13 @@ def main() -> None:
             sql = read_sql(repo, spec)
             for variant in variants_by_query[spec.query_id]:
                 plan_row = measure_plan_latency(
-                    duckdb, database, sql, spec, variant, args, traces_dir
+                    duckdb, database, sql, spec, variant, args, profiles_dir, traces_dir
                 )
                 run_row = measure_execution(
                     duckdb, database, sql, spec, variant, args, profiles_dir, traces_dir
                 )
                 run_row["explain_hash"] = plan_row.get("explain_hash")
+                plan_row = fill_plan_result_from_execution_profile(plan_row, run_row)
                 plan_rows.append(plan_row)
                 run_rows.append(run_row)
     else:

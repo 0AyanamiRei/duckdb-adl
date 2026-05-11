@@ -16,7 +16,7 @@ runner 只选择能被当前静态 parser 表达为 connected regular inner pair
 
 - 不扩展 `offline_large_join_harness.py`，它继续做静态 graph/endpoint artifact。
 - 不下载或构建 IMDB 数据库，只验证用户提供的 DuckDB database 是否含所需表。
-- 不做 C++ 细粒度 optimizer timing。
+- 不做 C++ instrumentation；第一版使用 DuckDB detailed profiling 读取 planner/optimizer/physical planner 阶段时间。
 - 不把 IKKBZ/NeuSO 输出应用到 DuckDB 最终 plan。
 - 不接 JOBLight。
 
@@ -68,7 +68,9 @@ adl-opt-runs/<run_id>/
   profiles/
 ```
 
-`plan_result.jsonl` 记录 `EXPLAIN` wall-clock，用来近似 SQL 到物理 plan 的端到端开销。`run_result.jsonl` 记录真实执行的 wall-clock，用来代表 plan quality。
+`plan_result.jsonl` 记录 DuckDB detailed profiling 中的 SQL 到 logical/optimized/physical plan 阶段时间，不把 CLI 子进程启动计入正式 plan latency。`run_result.jsonl` 记录 profile `latency - plan phases` 得到的 physical execution 时间，用来代表 plan quality；外部 wall-clock 只作为诊断字段保留。
+
+为了降低测量噪声，runner 会把同一个 variant 的 warmup/measure 放进同一个 DuckDB CLI session 内执行，而不是每个 sample 启动一个子进程。主 benchmark 采用 warm-cache 口径：同一 session 先 warmup，再 measure。cold-cache 需要 OS cache 控制，不作为本阶段验收标准。
 
 为了保护本地 WSL 磁盘，executable runner 默认给 DuckDB 设置受控 temp 目录、`max_temp_directory_size=8GB`、`max_memory=4GB`。每批 benchmark 后都应该检查 temp 目录；如果出现 timeout 或手动中断，先确认没有 DuckDB 进程再清理遗留 temp 文件。
 

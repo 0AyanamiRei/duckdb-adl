@@ -96,18 +96,27 @@ Required fields:
 
 ## `plan_result.jsonl`
 
-记录 plan 阶段。JOB/IMDB 第一版用 `EXPLAIN <query>` wall-clock 作为 SQL 输入到拿到物理 plan 输出的端到端开销，不做 C++ 细粒度 instrumentation。
+记录 plan 阶段。JOB/IMDB runner 使用 DuckDB detailed profiling，而不是外部 `time` 或每条 SQL 的子进程 wall-clock。`plan_latency_*` 在 JOB/IMDB 中表示 SQL parser、planner、optimizer、physical planner 阶段的合计时间；外部 DuckDB process wall-clock 只作为诊断字段。
 
 Required fields:
 
 - `query_id`: string.
 - `variant_id`: string.
 - `baseline_kind`: string.
+- `measurement_source`: `duckdb_detailed_profile`.
 - `plan_latency_samples_ms`: array of numbers.
 - `plan_latency_p50_ms`: number or null.
 - `plan_latency_p95_ms`: number or null.
 - `plan_latency_p99_ms`: number or null.
 - `plan_latency_max_ms`: number or null.
+- `qo_plan_time_samples_ms`: array of numbers, same semantic surface as `plan_latency_samples_ms` for JOB/IMDB.
+- `duckdb_wall_time_samples_ms`: diagnostic process/session wall-clock samples, not the formal benchmark metric.
+- `parser_time_p50_ms`: number or null.
+- `planner_time_p50_ms`: number or null.
+- `planner_binding_time_p50_ms`: number or null.
+- `optimizer_time_p50_ms`: number or null.
+- `join_order_optimizer_time_p50_ms`: number or null.
+- `physical_planner_time_p50_ms`: number or null.
 - `explain_hash`: string or null.
 - `physical_plan_available`: boolean.
 - `failure_reason`: string or null.
@@ -218,14 +227,21 @@ Required fields:
 - `execution_latency_p95_ms`: number or null.
 - `execution_latency_p99_ms`: number or null.
 - `execution_latency_max_ms`: number or null.
+- `measurement_source`: `duckdb_detailed_profile` for JOB/IMDB executable runs.
+- `duckdb_wall_time_samples_ms`: diagnostic process/session wall-clock samples, not the formal benchmark metric.
+- `query_latency_samples_ms`: DuckDB profile query latency samples before subtracting plan phases.
+- `qo_plan_time_samples_ms`: profiled SQL-to-plan time samples collected from the same measured executions.
+- `execution_cpu_time_samples_ms`: DuckDB profile CPU-time samples.
 - `optimizer_time_ms`: number or null.
+- `join_order_optimizer_time_ms`: number or null.
+- `qo_plan_time_ms`: number or null.
 - `execution_time_ms`: number or null.
 - `speedup_vs_default`: number or null.
 - `regret_vs_sampled_oracle`: number or null.
 - `timeout`: boolean.
 - `failure_reason`: string or null.
 
-For JOB/IMDB executable runs, `execution_latency_*` is the primary plan-quality proxy. `latency_*` remains valid for older TPC-H artifacts.
+For JOB/IMDB executable runs, `execution_latency_*` is the primary plan-quality proxy and means physical execution wall time derived from DuckDB detailed profiling: `query_latency_ms - qo_plan_time_ms`. It intentionally excludes CLI process startup and SQL-to-plan time. `duckdb_wall_time_samples_ms` is diagnostic only. `latency_*` remains valid for older TPC-H artifacts.
 
 ## `correctness.jsonl`
 
