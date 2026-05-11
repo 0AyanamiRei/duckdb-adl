@@ -120,6 +120,7 @@ The first classic JOB/IMDB benchmark is accepted when:
 - Each executable variant reports SQL-to-plan latency P50/P95/P99/max from DuckDB detailed profiling.
 - Each executable variant reports physical execution latency P50/P95/P99/max from DuckDB detailed profiling.
 - Correctness failures and timeouts are explicitly counted.
+- Execution failures and failed variants are explicitly counted.
 - Speedup/regret only use correct, non-timeout runs.
 
 ## Out of Scope

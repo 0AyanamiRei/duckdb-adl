@@ -47,8 +47,7 @@ python3 scripts/adl_opt/job_benchmark_runner.py \
   --max-temp-directory-size 8GB \
   --max-memory 4GB \
   --warmup-runs 1 \
-  --measure-runs 7 \
-  --plan-runs 7
+  --measure-runs 3
 ```
 
 ## Outputs
@@ -68,13 +67,13 @@ adl-opt-runs/<run_id>/
   profiles/
 ```
 
-`plan_result.jsonl` 记录 DuckDB detailed profiling 中的 SQL 到 logical/optimized/physical plan 阶段时间，不把 CLI 子进程启动计入正式 plan latency。`run_result.jsonl` 记录 profile `latency - plan phases` 得到的 physical execution 时间，用来代表 plan quality；外部 wall-clock 只作为诊断字段保留。
+`plan_result.jsonl` 记录 DuckDB detailed profiling 中的 SQL 到 logical/optimized/physical plan 阶段时间，不把 CLI 子进程启动计入正式 plan latency。`EXPLAIN` 每个 variant 只执行一次，用于生成 `explain_hash` 和确认 plan 可生成。`run_result.jsonl` 记录 profile `latency - plan phases` 得到的 physical execution 时间，用来代表 plan quality；外部 wall-clock 只作为诊断字段保留。
 
 为了降低测量噪声，runner 会把同一个 variant 的 warmup/measure 放进同一个 DuckDB CLI session 内执行，而不是每个 sample 启动一个子进程。主 benchmark 采用 warm-cache 口径：同一 session 先 warmup，再 measure。cold-cache 需要 OS cache 控制，不作为本阶段验收标准。
 
 为了保护本地 WSL 磁盘，executable runner 默认给 DuckDB 设置受控 temp 目录、`max_temp_directory_size=8GB`、`max_memory=4GB`。每批 benchmark 后都应该检查 temp 目录；如果出现 timeout 或手动中断，先确认没有 DuckDB 进程再清理遗留 temp 文件。
 
-valid random endpoint path 会被改写成显式 `JOIN ... ON ...` tree，并通过 `disabled_optimizers='join_order'` 尝试固定执行。IKKBZ top-1 和 NeuSO runtime variant 当前只打开验证/导出 setting，DuckDB 仍选择最终 plan。
+`sql_original` 是参考 baseline：它关闭 DuckDB join-order optimizer 后执行原 SQL，可能失败或 timeout；这些 case 会被记录到 failure/timeout 统计，不阻断整轮 benchmark。valid random endpoint path 会被改写成显式 `JOIN ... ON ...` tree，并通过 `disabled_optimizers='join_order'` 尝试固定执行。IKKBZ top-1 和 NeuSO runtime variant 当前只打开验证/导出 setting，DuckDB 仍选择最终 plan。
 
 ## Validation
 

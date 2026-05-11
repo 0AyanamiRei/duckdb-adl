@@ -96,7 +96,7 @@ Required fields:
 
 ## `plan_result.jsonl`
 
-记录 plan 阶段。JOB/IMDB runner 使用 DuckDB detailed profiling，而不是外部 `time` 或每条 SQL 的子进程 wall-clock。`plan_latency_*` 在 JOB/IMDB 中表示 SQL parser、planner、optimizer、physical planner 阶段的合计时间；外部 DuckDB process wall-clock 只作为诊断字段。
+记录 plan 阶段。JOB/IMDB runner 使用 DuckDB detailed profiling，而不是外部 `time` 或每条 SQL 的子进程 wall-clock。`plan_latency_*` 在 JOB/IMDB 中表示 SQL parser、planner、optimizer、physical planner 阶段的合计时间；外部 DuckDB process wall-clock 只作为诊断字段。`EXPLAIN` 每个 variant 只执行一次，用于 `explain_hash` 和 plan 可生成性检查。
 
 Required fields:
 
@@ -242,6 +242,8 @@ Required fields:
 - `failure_reason`: string or null.
 
 For JOB/IMDB executable runs, `execution_latency_*` is the primary plan-quality proxy and means physical execution wall time derived from DuckDB detailed profiling: `query_latency_ms - qo_plan_time_ms`. It intentionally excludes CLI process startup and SQL-to-plan time. `duckdb_wall_time_samples_ms` is diagnostic only. `latency_*` remains valid for older TPC-H artifacts.
+
+`sql_original` is a reference baseline. It may fail or timeout when join-order optimization is disabled; those rows keep `failure_reason`/`timeout`, do not block the benchmark run, and are excluded from successful speedup/regret calculations.
 
 ## `correctness.jsonl`
 

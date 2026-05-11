@@ -684,13 +684,12 @@ def measure_plan_latency(
     try:
         statements = statement_prefix(args, variant, trace_file=trace_file)
         query = variant_sql.rstrip().rstrip(";")
-        for _ in range(args.plan_runs):
-            statements.append(f"EXPLAIN {query};")
+        statements.append(f"EXPLAIN {query};")
         code, out, err, latency_ms = duckdb_run(
             duckdb,
             database,
             "\n".join(statements),
-            args.timeout * max(1, args.plan_runs),
+            args.timeout,
             csv_output=False,
         )
         wall_samples.append(latency_ms)
@@ -1039,6 +1038,10 @@ def aggregate_summary(
             for row in run_rows
             if row.get("failure_reason") in {"apply_not_implemented", "invalid_endpoint_path"}
         ),
+        "execution_failure_count": sum(
+            1 for row in run_rows if row.get("failure_reason") == "execution failed"
+        ),
+        "failed_variant_count": sum(1 for row in run_rows if row.get("failure_reason")),
         "plan_latency": latency_stats(plan_samples),
         "execution_latency": latency_stats(execution_samples),
         "plan_quality": {
@@ -1072,6 +1075,8 @@ def write_summary_md(output: Path, summary: dict) -> None:
         f"- Correctness failures: {summary['correctness_failures']}",
         f"- Timeout count: {summary['timeout_count']}",
         f"- Fallback/skipped variants: {summary['fallback_count']}",
+        f"- Execution failures: {summary['execution_failure_count']}",
+        f"- Failed variants: {summary['failed_variant_count']}",
         f"- Plan latency P50/P95/P99/max ms: {summary['plan_latency']} (DuckDB detailed profiling)",
         f"- Physical execution latency P50/P95/P99/max ms: {summary['execution_latency']} (profile latency minus plan phases)",
         f"- Plan quality: {summary['plan_quality']}",
@@ -1106,8 +1111,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-temp-directory-size", default="8GB")
     parser.add_argument("--max-memory", default="4GB")
     parser.add_argument("--warmup-runs", type=int, default=1)
-    parser.add_argument("--measure-runs", type=int, default=7)
-    parser.add_argument("--plan-runs", type=int, default=7)
+    parser.add_argument("--measure-runs", type=int, default=3)
     parser.add_argument("--timeout", type=int, default=300)
     parser.add_argument("--include-neuso", action="store_true")
     parser.add_argument(
@@ -1179,13 +1183,14 @@ def main() -> None:
         "max_memory": args.max_memory,
         "warmup_runs": args.warmup_runs,
         "measure_runs": args.measure_runs,
-        "plan_runs": args.plan_runs,
         "timeout": args.timeout,
         "include_neuso": args.include_neuso,
         "joblight": "not_used",
         "measurement_source": "duckdb_detailed_profile",
         "plan_latency_semantics": "SQL parser/planner/optimizer/physical-planner timing from detailed profiling",
         "execution_latency_semantics": "DuckDB profile latency minus profiled plan phases",
+        "cache_policy": "warm_cache_same_session",
+        "prepared_statement": False,
     }
     (output / "run_config.json").write_text(json.dumps(run_config, indent=2, sort_keys=True) + "\n")
 

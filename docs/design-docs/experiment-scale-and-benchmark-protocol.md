@@ -80,8 +80,7 @@ python3 scripts/adl_opt/job_benchmark_runner.py \
   --max-temp-directory-size 8GB \
   --max-memory 4GB \
   --warmup-runs 1 \
-  --measure-runs 7 \
-  --plan-runs 7
+  --measure-runs 3
 ```
 
 这个 runner 不负责下载或完整构建 IMDB 数据库；它只验证目标表是否存在，然后执行 selected queries。输出采用 `adl-opt-runs/<run_id>/` 结构，包含 `workload.jsonl`、`variant.jsonl`、`plan_result.jsonl`、`run_result.jsonl`、`correctness.jsonl`、`summary.json/md`、`traces/` 和 `profiles/`。
@@ -179,14 +178,14 @@ Random order 数量按轮次递增：
 
 ## Measurement Rules
 
-每个 variant 至少 warm up 1 次，正式测量 5 次。论文主结果推荐正式测量 7 次，并报告 P50/P95/P99/max。
+JOB/IMDB 第一阶段每个 variant warm up 1 次，正式测量 3 次，并报告 P50/P95/P99/max。由于样本数较小，P95/P99 只作为本地小样本参考；如果后续写论文主结果，可以单独提高 `measure_runs`。
 
 JOB/IMDB 主测评拆成两类 latency：
 
-- Plan latency: 对每个 query/variant 执行 `EXPLAIN <query>`，但正式指标来自 DuckDB detailed profiling 中的 parser、planner、optimizer、physical planner 阶段时间，不使用外部子进程 wall-clock。
-- Execution latency: 对每个 query/variant warmup 1 次、measure 7 次，正式指标来自 DuckDB detailed profiling 的 `latency - plan phases`，用 physical execution 时间代表 plan quality。
+- Plan latency: 每个 query/variant 只执行一次 `EXPLAIN <query>` 来获取 `explain_hash` 和确认 plan 可生成；正式指标来自 DuckDB detailed profiling 中的 parser、planner、optimizer、physical planner 阶段时间，不使用外部子进程 wall-clock。
+- Execution latency: 对每个 query/variant warmup 1 次、measure 3 次，正式指标来自 DuckDB detailed profiling 的 `latency - plan phases`，用 physical execution 时间代表 plan quality。
 
-runner 会把同一个 variant 的 warmup/measure 放在同一个 DuckDB CLI session 里执行。`duckdb_wall_time_samples_ms` 只作为诊断字段，不能作为论文主结果。
+runner 会把同一个 variant 的 warmup/measure 放在同一个 DuckDB CLI session 里执行，不使用 prepared statement。`duckdb_wall_time_samples_ms` 只作为诊断字段，不能作为论文主结果。`sql_original` 是参考 baseline；失败或 timeout 会被记录，但不阻断整轮 benchmark，也不进入 speedup/regret 的成功样本集合。
 
 每次运行必须记录：
 

@@ -40,8 +40,7 @@ python3 scripts/adl_opt/job_benchmark_runner.py \
   --max-temp-directory-size 8GB \
   --max-memory 4GB \
   --warmup-runs 1 \
-  --measure-runs 7 \
-  --plan-runs 7
+  --measure-runs 3
 ```
 
 `job_benchmark_runner.py` is the first JOB/IMDB runner that measures real
@@ -58,6 +57,9 @@ JOBLight is not part of this stage.
 Use `--baseline-kinds duckdb_default` for a clean DuckDB default optimizer run.
 The default `--baseline-kinds all` keeps the full runner behavior and emits the
 other configured validation/baseline variants as well.
+`sql_original` is a reference baseline: it may fail or timeout when join-order
+optimization is disabled, and those cases are recorded rather than blocking the
+whole run.
 
 Executable runs set DuckDB's `temp_directory`, `max_temp_directory_size`, and
 `max_memory` before each `EXPLAIN` or query execution. The defaults are
