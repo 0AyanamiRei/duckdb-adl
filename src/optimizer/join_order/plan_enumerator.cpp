@@ -466,6 +466,44 @@ void PlanEnumerator::InitLeafPlans() {
 	}
 }
 
+void PlanEnumerator::ApplyJoinOrder(const vector<idx_t> &relation_order) {
+	auto relation_count = query_graph_manager.relation_manager.NumRelations();
+	if (relation_order.size() != relation_count) {
+		throw InvalidInputException("ADL-OPT join order length does not match relation count");
+	}
+	if (relation_order.empty()) {
+		throw InvalidInputException("ADL-OPT join order must not be empty");
+	}
+
+	vector<bool> seen(relation_count, false);
+	for (auto relation_id : relation_order) {
+		if (relation_id >= relation_count) {
+			throw InvalidInputException("ADL-OPT join order contains unknown relation id %llu", relation_id);
+		}
+		if (seen[relation_id]) {
+			throw InvalidInputException("ADL-OPT join order contains duplicate relation id %llu", relation_id);
+		}
+		seen[relation_id] = true;
+	}
+
+	auto current_set = &query_graph_manager.set_manager.GetJoinRelation(RelationIndex(relation_order[0]));
+	for (idx_t order_idx = 1; order_idx < relation_order.size(); order_idx++) {
+		auto &next_set = query_graph_manager.set_manager.GetJoinRelation(RelationIndex(relation_order[order_idx]));
+		auto connections = query_graph.GetConnections(*current_set, next_set);
+		if (connections.empty()) {
+			throw InvalidInputException("ADL-OPT join order append is disconnected at relation %llu",
+			                            relation_order[order_idx]);
+		}
+		EmitPair(*current_set, next_set, connections);
+		current_set = &query_graph_manager.set_manager.Union(*current_set, next_set);
+	}
+
+	auto final_plan = plans.find(*current_set);
+	if (final_plan == plans.end()) {
+		throw InternalException("ADL-OPT failed to construct the requested join plan");
+	}
+}
+
 // the plan enumeration is a straight implementation of the paper "Dynamic Programming Strikes Back" by Guido
 // Moerkotte and Thomas Neumannn, see that paper for additional info/documentation bonus slides:
 // https://db.in.tum.de/teaching/ws1415/queryopt/chapter3.pdf?lang=de

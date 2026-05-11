@@ -1,10 +1,10 @@
 # DuckDB Join-Order Code Path Tutorial
 
-English TL;DR: This tutorial explains DuckDB's native join-order optimizer code path and where the R5 ADL-OPT IKKBZ linearization export attaches without changing DuckDB's chosen plan.
+English TL;DR: This tutorial explains DuckDB's native join-order optimizer code path, the R5 ADL-OPT IKKBZ linearization export, and the NeuSO runtime applied path that can replace DuckDB's large-join plan under experimental settings.
 
 Updated: 2026-05-08
 
-Key terms: DuckDB, join order, QueryGraphManager, RelationManager, PlanEnumerator, DPhyp, approximate greedy, R5, IKKBZ, export-only
+Key terms: DuckDB, join order, QueryGraphManager, RelationManager, PlanEnumerator, DPhyp, approximate greedy, R5, IKKBZ, NeuSO, applied path
 
 ## 目标和阅读方式
 
@@ -12,7 +12,7 @@ Key terms: DuckDB, join order, QueryGraphManager, RelationManager, PlanEnumerato
 
 - DuckDB 原生 join-order optimizer 从哪里进入。
 - join graph、relation set、filter binding 和 DP plan table 是怎么流动的。
-- R5 IKKBZ linearization export 插在什么位置。
+- R5 IKKBZ linearization export 和 NeuSO runtime applied path 插在什么位置。
 - 为什么 R5 的导出结果可能描述的是一个 join-order 子问题，而不是整条 SQL statement。
 
 它不是 `adl_linearize_join_order` 的用户使用文档，也不是一份 ADR。参数、命令和 JSON 字段的使用方式继续看 `docs/design-docs/ikkbz-linearization-export-usage.md`。
@@ -29,7 +29,10 @@ Optimizer::RunBuiltInOptimizers()
       -> RelationManager::ExtractEdges()
       -> QueryGraphManager::CreateHyperGraphEdges()
     -> PlanEnumerator::InitLeafPlans()
-    -> PlanEnumerator::SolveJoinOrder()
+    -> ADLOptJoinLinearizer::Generate()       // only when ADL linearization is enabled
+    -> NeuSORuntimeBridge::InvokeIfEnabled()  // only when NeuSO runtime is enabled
+    -> PlanEnumerator::ApplyJoinOrder()       // if NeuSO returned an order
+       or PlanEnumerator::SolveJoinOrder()    // otherwise DuckDB native path
     -> QueryGraphManager::Reconstruct()
 ```
 
@@ -158,25 +161,26 @@ R5 不在这里实现一套通用 join legality model。它只消费 regular inn
 
 因此，`plans` 是 DuckDB 最终 chosen join tree 的来源。只要一个功能不修改 `plans`，也不替换 `Reconstruct()` 的输入，它就没有改变 DuckDB 的 join-order decision。
 
-## R5 PR 插入点
+## R5 和 NeuSO Runtime 插入点
 
-R5 的 IKKBZ linearization export 插在 `JoinOrderOptimizer::Optimize()` 的这段位置：
+R5 的 IKKBZ linearization export 和 NeuSO runtime applied path 都插在 `JoinOrderOptimizer::Optimize()` 的这段位置：
 
 ```text
 PlanEnumerator::InitLeafPlans()
-PlanEnumerator::SolveJoinOrder()
 ADLOptJoinLinearizer::Generate()
+NeuSORuntimeBridge::InvokeIfEnabled()
+PlanEnumerator::ApplyJoinOrder() or PlanEnumerator::SolveJoinOrder()
 QueryGraphManager::Reconstruct()
 ```
 
-也就是说，R5 在 DuckDB 已经完成当前 join-order 子图求解之后、真正 reconstruct logical plan 之前读取信息。这个位置有几个好处：
+也就是说，ADL-OPT 在 leaf cardinality 和 cardinality estimator 初始化之后读取当前 join-order 子图；如果 runtime 没有返回 order，DuckDB 继续走原生求解；如果 runtime 返回合法 order，则写入 `PlanEnumerator::plans` 后再 reconstruct logical plan。这个位置有几个好处：
 
 - leaf cardinality 和 cardinality estimator 已经初始化。
-- DuckDB 原生 `plans` 已经求好，可以继续作为 chosen plan。
 - R5 可以读取 query graph、filter bindings、relation stats 和估计 cardinality。
-- R5 不需要也不应该修改 `PlanEnumerator::plans`。
+- export-only path 不需要修改 `PlanEnumerator::plans`。
+- applied path 可以复用 DuckDB 原生 `DPJoinNode` / `Reconstruct()` 机制，而不是在 join-order pass 外部重写 logical plan。
 
-R5 当前只做 export-only：
+只开启 `adl_linearize_join_order` 时仍然是 export-only：
 
 - `ADLOptJoinLinearizer::Generate()` 读取 `QueryGraphManager` 和 `CostModel`。
 - 对 `relation_count >= 12` 的 regular inner comparison graph 构造 estimated selectivity MST。
@@ -184,12 +188,18 @@ R5 当前只做 export-only：
 - 把 full JSON 写到 `adl_linearization_output` 指定路径。
 - 把 compact summary 放到 `ClientData::adl_join_linearization`，供 `EXPLAIN` 输出。
 
+同时开启 `adl_neuso_runtime_enabled` 时会进入 applied path：
+
+- `NeuSORuntimeBridge::InvokeIfEnabled()` 把 graph 和 base order 发给 sidecar。
+- C++ bridge 校验 response 的 request id、graph hash、permutation 和 connected append path。
+- `PlanEnumerator::ApplyJoinOrder()` 按 response order 构造 left-deep `DPJoinNode` 链。
+- `QueryGraphManager::Reconstruct()` 从更新后的 `plans` 生成实际 logical join tree。
+
 R5 不做这些事：
 
 - 不替换 `SolveJoinOrderApproximately()`。
-- 不修改 `plans`。
-- 不把 `linear_orders` 应用回 `QueryGraphManager::Reconstruct()`。
-- 不读取外部 ADL-OPT model 或 endpoint append decision。
+- export-only 模式不修改 `plans`。
+- 不在 `PlanEnumerator` 之外手写 logical join tree。
 - 不在 join-order pass 外层扫描整条 logical plan 来判断各种特殊 join 类型。
 
 ## Settings、ClientData 和 EXPLAIN 数据流
@@ -250,7 +260,7 @@ review R5 或后续 ADL-OPT join-order 改动时，优先守住这些点：
 
 - 默认关闭 setting 时，不应该产生 ADL-OPT JSON 或 `EXPLAIN` 行。
 - export-only 代码不应该修改 `PlanEnumerator::plans`。
-- DuckDB chosen plan 应继续由 `QueryGraphManager::Reconstruct()` 读取原生 `plans` 生成。
+- applied path 只应通过 `PlanEnumerator::ApplyJoinOrder()` 修改 `plans`，并继续让 `QueryGraphManager::Reconstruct()` 生成 logical join tree。
 - R5 的支持范围应保持 regular inner pair graph；复杂 join 不应被伪装成完整 regular graph。
 - 如果导出的是 child subproblem，文档或后续 schema 必须让 consumer 看得出 scope。
 - `EXPLAIN` metadata 必须按 query 清理，不能泄漏到无关 statement。

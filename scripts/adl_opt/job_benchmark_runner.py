@@ -7,8 +7,9 @@ large-join artifact generator. It measures two DuckDB-internal surfaces:
 * plan latency: SQL -> logical/optimized/physical plan time from detailed profiling
 * plan quality proxy: physical execution time from detailed profiling
 
-The first version does not force IKKBZ/NeuSO choices back into DuckDB. Valid
-random endpoint paths are applied through an explicit JOIN tree plus
+The ADL-OPT applied variant sends a large regular join graph to the NeuSO
+runtime sidecar and lets DuckDB construct the returned left-deep join order.
+Valid random endpoint paths are applied through an explicit JOIN tree plus
 disabled_optimizers='join_order'; invalid endpoint paths are kept as structured
 skipped rows.
 """
@@ -46,6 +47,7 @@ BASELINE_KINDS = {
     "duckdb_default",
     "sql_original",
     "ikkbz_top1_export",
+    "adl_opt_applied",
     "neuso_runtime_validate",
     "random_endpoint",
 }
@@ -432,14 +434,14 @@ def build_variants(
         variants.append(
             VariantSpec(
                 query_id=spec.query_id,
-                variant_id=f"{spec.query_id}:neuso_runtime_validate",
-                baseline_kind="neuso_runtime_validate",
+                variant_id=f"{spec.query_id}:adl_opt_applied",
+                baseline_kind="adl_opt_applied",
                 executable=True,
                 settings_kind="neuso_runtime",
                 join_path=[],
                 endpoint_sides=[],
                 seed=None,
-                note="Validates NeuSO runtime response; DuckDB still chooses the plan.",
+                note="Applies the NeuSO runtime response as a left-deep join order.",
             )
         )
 
@@ -496,7 +498,7 @@ def variant_row(variant: VariantSpec) -> dict:
 def filter_variants(variants: list[VariantSpec], baseline_kinds: list[str]) -> list[VariantSpec]:
     if "all" in baseline_kinds:
         return variants
-    selected = set(baseline_kinds)
+    selected = {"adl_opt_applied" if kind == "neuso_runtime_validate" else kind for kind in baseline_kinds}
     return [variant for variant in variants if variant.baseline_kind in selected]
 
 

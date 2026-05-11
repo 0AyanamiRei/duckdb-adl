@@ -1,6 +1,6 @@
 # NeuSO Runtime DuckDB Bridge
 
-English TL;DR: DuckDB now pre-starts an experimental NeuSO Python sidecar, generates IKKBZ-style base linear orders inside join-order optimization, sends the join graph plus base order to NeuSO over HTTP JSON, validates the returned relation-id order, and still leaves DuckDB's native plan unchanged for this phase.
+English TL;DR: DuckDB now pre-starts an experimental NeuSO Python sidecar, sends the large regular join graph plus IKKBZ-style base order to NeuSO over HTTP JSON, validates the returned relation-id order, and applies it as a left-deep join plan inside DuckDB's join-order pass.
 
 Updated: 2026-05-09
 
@@ -8,17 +8,18 @@ Key terms: NeuSO, DuckDB, runtime inference, join order, IKKBZ, sidecar, relatio
 
 ## 目标边界
 
-本文只说明 DuckDB 在线优化阶段如何接入 NeuSO。它不讨论模型训练、离线数据集生成、标签采样、benchmark 设计，也不把 NeuSO 返回的 order 绑定到最终 physical rule。
+本文只说明 DuckDB 在线优化阶段如何接入 NeuSO。它不讨论模型训练、离线数据集生成、标签采样或 benchmark 设计。
 
-当前实现的目标是验证运行时接口闭环：
+当前实现的目标是验证运行时接口到 plan 应用的完整闭环：
 
 - DuckDB 能自动管理 Python sidecar。
 - DuckDB 能在 join-order optimization 中构造 NeuSO runtime request。
 - Request 包含 DuckDB join graph、optimizer-stage estimated feature，以及 PR5 线性化路径产生的 base linear order。
 - NeuSO sidecar 能返回合法 relation-id `join_order`。
 - DuckDB 能校验 response 属于当前 request，并校验 order 是合法 permutation 和 connected append path。
+- DuckDB 能把返回的 order 构造成 left-deep `DPJoinNode` 链，写入 `PlanEnumerator::plans`，再交给 `QueryGraphManager::Reconstruct()` 生成实际 logical join tree。
 
-当前实现仍然不改变 DuckDB 的最终计划。`NeuSORuntimeBridge::InvokeIfEnabled()` 校验 response 后返回，随后 `PlanEnumerator::SolveJoinOrder()` 继续走 DuckDB 原生逻辑。后续真正应用 NeuSO order 时，才需要把 response 转成 forced left-deep `DPJoinNode` 链并写回 `plans` 表。
+开启 `adl_neuso_runtime_enabled` 后，这条路径会改变当前 large-join 子图的 DuckDB chosen join plan。未开启 runtime、relation 数小于阈值、或没有返回 order 时，DuckDB 仍走原生 `PlanEnumerator::SolveJoinOrder()`。
 
 第一版支持范围仍然很窄：
 
@@ -58,19 +59,23 @@ workload SQL
      -> BuildRequestJSON()
      -> POST /infer_join_order
      -> ValidateResponse()
-  -> PlanEnumerator::SolveJoinOrder()
+  -> 如果返回 join_order:
+       PlanEnumerator::ApplyJoinOrder(join_order)
+     否则:
+       PlanEnumerator::SolveJoinOrder()
   -> QueryGraphManager::Reconstruct()
   -> execution
 ```
 
-这个顺序很重要：PR5 的线性化结果先生成，再作为 NeuSO request 中的 `base_linear_order` / `candidate_linear_orders` 传给模型。NeuSO 目前只参与“输入/输出和合法性验证”，不接管 `PlanEnumerator`。
+这个顺序很重要：PR5 的线性化结果先生成，再作为 NeuSO request 中的 `base_linear_order` / `candidate_linear_orders` 传给模型。NeuSO response 通过校验后才接管当前 large-join 子图的 `PlanEnumerator` 结果；没有 response 时仍使用 DuckDB 原生求解。
 
 相关代码位置：
 
 - `src/main/settings/custom_settings.cpp`：`AdlNeusoRuntimeEnabledSetting::OnSet()` 触发 sidecar 预启动。
-- `src/optimizer/join_order/join_order_optimizer.cpp`：先调用 `ExportADLOptJoinLinearization()`，再调用 `NeuSORuntimeBridge::InvokeIfEnabled()`。
+- `src/optimizer/join_order/join_order_optimizer.cpp`：先调用 `ExportADLOptJoinLinearization()`，再调用 `NeuSORuntimeBridge::InvokeIfEnabled()`，有返回 order 时调用 `PlanEnumerator::ApplyJoinOrder()`。
 - `src/optimizer/join_order/adl_opt_join_linearizer.cpp`：生成 IKKBZ/MST-style `linear_orders`。
 - `src/optimizer/join_order/neuso_runtime_bridge.cpp`：管理 sidecar、构造 request、发送 HTTP JSON、校验 response。
+- `src/optimizer/join_order/plan_enumerator.cpp`：`ApplyJoinOrder()` 根据 response order 构造 left-deep `DPJoinNode` 链。
 - `scripts/adl_opt/neuso_runtime_sidecar.py`：Python HTTP sidecar。
 - `scripts/adl_opt/neuso_runtime_bridge_smoke.py`：文件驱动 regression runner。
 
@@ -297,7 +302,7 @@ Join order 语义校验：
 
 如果任一校验失败，或 sidecar 超时、崩溃、返回 non-200/malformed JSON，当前实现直接抛出 `InvalidInputException`。这符合“先验证接口，不处理失败回退”的阶段目标。
 
-未来当 NeuSO order 开始影响最终计划时，应改成 fail-closed fallback：
+后续如果要把 runtime bridge 做得更像生产系统，应补上 fail-closed fallback：
 
 ```text
 记录 request_id / graph_hash / error reason
@@ -307,27 +312,19 @@ Join order 语义校验：
 
 ## DuckDB 侧应用语义
 
-当前实现不应用 NeuSO 返回的 `join_order`。`NeuSORuntimeBridge::InvokeIfEnabled()` 校验通过后返回，`JoinOrderOptimizer::Optimize()` 继续调用 `plan_enumerator.SolveJoinOrder()`。
+当前实现会应用 NeuSO 返回的 `join_order`。`NeuSORuntimeBridge::InvokeIfEnabled()` 返回通过校验的 relation-id order 后，`JoinOrderOptimizer::Optimize()` 调用 `PlanEnumerator::ApplyJoinOrder()`。
 
-未来应用方向是新增内部 helper，例如：
+`ApplyJoinOrder()` 做这些事：
 
-```cpp
-bool TryBuildForcedLeftDeepPlan(
-    QueryGraphManager &query_graph_manager,
-    CostModel &cost_model,
-    PlanEnumerator &plan_enumerator,
-    const vector<idx_t> &join_order
-);
-```
+1. 校验 `join_order` 长度、relation id 范围和重复项。
+2. 按 `join_order` 找 singleton `JoinRelationSet`。
+3. 从第一个 relation 开始构造 left-deep join 链。
+4. 对每一步 append，复用 `QueryGraphEdges::GetConnections()` 找 join filter。
+5. 通过原有 `EmitPair()` / `CreateJoinTree()` 创建 `DPJoinNode`。
+6. 写入 `PlanEnumerator` 的 `plans` 表。
+7. 让最终 full relation set 对应 NeuSO forced plan，供 `QueryGraphManager::Reconstruct()` 使用。
 
-该 helper 应做这些事：
-
-1. 按 `join_order` 找 singleton `JoinRelationSet`。
-2. 从第一个 relation 开始构造 left-deep join 链。
-3. 对每一步 append，复用 `QueryGraphEdges::GetConnections()` 找 join filter。
-4. 为每个中间 set 生成 `DPJoinNode`。
-5. 写入 `PlanEnumerator` 的 `plans` 表。
-6. 让最终 full relation set 对应 NeuSO forced plan。
+这意味着 ADL-OPT applied path 和 IKKBZ export-only path 已经分开：只开 `adl_linearize_join_order` 时仍然不改变 plan；同时开启 `adl_neuso_runtime_enabled` 时才应用 sidecar response。
 
 随后仍走：
 

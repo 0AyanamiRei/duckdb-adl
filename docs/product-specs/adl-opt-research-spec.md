@@ -67,7 +67,7 @@ Large-join baselines:
 - DuckDB current approximate greedy path.
 - SQL original order.
 - IKKBZ top-1 export validation, where DuckDB still chooses the final plan.
-- NeuSO runtime validation, where DuckDB validates the sidecar response but still chooses the final plan.
+- ADL-OPT applied path, where DuckDB validates the NeuSO sidecar response and applies it as an experimental left-deep join plan.
 - Fixture linear order plus ADL-OPT endpoint path.
 - Random endpoint path over the same linear order, applied as an explicit join tree when valid.
 

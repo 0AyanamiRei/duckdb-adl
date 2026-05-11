@@ -152,12 +152,17 @@ unique_ptr<LogicalOperator> JoinOrderOptimizer::Optimize(unique_ptr<LogicalOpera
 		auto plan_enumerator =
 		    PlanEnumerator(query_graph_manager, cost_model, query_graph_manager.GetQueryGraphEdges());
 
-			// Initialize the leaf/single node plans
-			plan_enumerator.InitLeafPlans();
-			auto linearization_result = ExportADLOptJoinLinearization(context, query_graph_manager, cost_model);
-			NeuSORuntimeBridge::InvokeIfEnabled(query_graph_manager, cost_model, linearization_result.linear_orders);
+		// Initialize the leaf/single node plans
+		plan_enumerator.InitLeafPlans();
+		auto linearization_result = ExportADLOptJoinLinearization(context, query_graph_manager, cost_model);
+		auto adl_join_order =
+		    NeuSORuntimeBridge::InvokeIfEnabled(query_graph_manager, cost_model, linearization_result.linear_orders);
+		if (!adl_join_order.empty()) {
+			plan_enumerator.ApplyJoinOrder(adl_join_order);
+		} else {
 			plan_enumerator.SolveJoinOrder();
-			// now reconstruct a logical plan from the query graph plan
+		}
+		// now reconstruct a logical plan from the query graph plan
 		query_graph_manager.plans = &plan_enumerator.GetPlans();
 
 		new_logical_plan = query_graph_manager.Reconstruct(std::move(plan));

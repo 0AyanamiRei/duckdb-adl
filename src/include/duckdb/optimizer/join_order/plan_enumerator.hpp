@@ -38,6 +38,7 @@ public:
 	//! Perform the join order solving
 	void SolveJoinOrder();
 	void InitLeafPlans();
+	void ApplyJoinOrder(const vector<idx_t> &relation_order);
 
 	const reference_map_t<JoinRelationSet, unique_ptr<DPJoinNode>> &GetPlans() const;
 

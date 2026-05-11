@@ -10,7 +10,7 @@ Key terms: benchmark protocol, dataset scale, TPC-H, JOB, IMDB, smoke test, main
 
 本文档固定 ADL-OPT 第一阶段的测试轮次、数据集规模和资源预估。目标不是追求精确到 MB 的容量预测，而是让每一轮实验都有明确的输入规模、运行目的、磁盘预算和准入标准，避免把项目拖成不可复现的数据搬运工程。
 
-ADL-OPT v0 只研究 offline join-order decision harness，不修改 DuckDB 查询行为。所有性能结论都必须建立在结果正确、计划形状可验证、实验配置可复现的前提上。
+ADL-OPT 早期 R0/R1 只研究 offline join-order decision harness；现在的 applied path 会在实验 setting 下修改 DuckDB large-join 子图的 chosen join plan。所有性能结论都必须建立在结果正确、计划形状可验证、实验配置可复现的前提上。
 
 ## Scale Ladder
 

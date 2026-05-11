@@ -68,8 +68,10 @@ disks so spill files cannot grow until WSL becomes unusable.
 
 For valid `random_endpoint` variants, the runner rewrites the comma-style JOB
 `FROM` list into an explicit `JOIN ... ON ...` tree and sets
-`disabled_optimizers='join_order'`. IKKBZ top-1 and NeuSO runtime variants are
-validation/export variants for now; DuckDB still chooses their final plan.
+`disabled_optimizers='join_order'`. IKKBZ top-1 remains export-only. The
+`adl_opt_applied` variant sends the regular large join graph to the NeuSO
+runtime sidecar and applies the returned relation order inside DuckDB's
+join-order pass.
 
 Build DuckDB with the TPC-H extension while using roughly 75% CPU:
 
@@ -139,10 +141,10 @@ PYTHONPATH=NeuSO .venv/bin/python scripts/adl_opt/neuso_runtime_bridge_smoke.py 
 This path lets DuckDB auto-manage the Python sidecar. The runner pre-starts the
 sidecar by setting `adl_neuso_runtime_enabled=true` through CLI `-cmd` before the
 workload SQL reaches the optimizer; join-order optimization then sends and
-validates the NeuSO request/response. It does not apply the returned order to
-the final plan yet. The runner writes `duckdb_runtime_trace.json` under the
-output directory so the actual DuckDB request and sidecar response can be
-reviewed.
+validates the NeuSO request/response, then applies the returned order as an
+experimental left-deep join plan. The runner writes `duckdb_runtime_trace.json`
+under the output directory so the actual DuckDB request and sidecar response can
+be reviewed.
 
 The execute path assumes the TPC-H extension is available to the binary. If data is not present, the script tries:
 
@@ -174,7 +176,11 @@ The schema is documented in `docs/design-docs/feature-and-label-schema.md`.
 
 `run_result.jsonl` stores physical execution latency samples, P50/P95/P99/max latency, row count, order-independent checksum, `EXPLAIN` hash, and detailed-profile optimizer/execution timings. For JOB/IMDB, external DuckDB process wall-clock is diagnostic only.
 
-The large-join Python runner is still static. R5 adds a separate DuckDB kernel export-only path that can write IKKBZ-style linearization candidates for real large-join plans, but it still does not apply those candidates to DuckDB's chosen plan.
+The large-join Python runner is still static. R5 adds a separate DuckDB kernel
+export path that can write IKKBZ-style linearization candidates for real
+large-join plans. The NeuSO runtime path can now consume those candidates and
+apply the sidecar response to DuckDB's chosen join plan when the experimental
+settings are enabled.
 
 The JOB executable runner is deliberately separate from `offline_large_join_harness.py`:
 the static harness remains useful for endpoint-path artifact design, while the

@@ -81,10 +81,10 @@ Required fields:
 
 - `query_id`: string.
 - `variant_id`: stable id, for example `job_29a:duckdb_default`.
-- `baseline_kind`: `duckdb_default`, `sql_original`, `ikkbz_top1_export`, `neuso_runtime_validate`, or `random_endpoint`.
+- `baseline_kind`: `duckdb_default`, `sql_original`, `ikkbz_top1_export`, `adl_opt_applied`, or `random_endpoint`.
 - `executable`: boolean. `false` means this variant is recorded for comparison/design but not applied to DuckDB yet.
 - `settings_kind`: string describing the DuckDB settings block.
-- `join_path`: array of aliases, empty when DuckDB still chooses the plan.
+- `join_path`: array of aliases for explicit SQL rewrites, empty for DuckDB-setting-driven variants such as `adl_opt_applied`.
 - `endpoint_sides`: array of `left`/`right` choices for endpoint-path variants.
 - `seed`: number or null.
 - `note`: string or null.

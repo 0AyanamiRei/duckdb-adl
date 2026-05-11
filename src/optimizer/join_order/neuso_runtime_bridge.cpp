@@ -506,8 +506,8 @@ static void ValidateLinearOrders(QueryGraphManager &query_graph_manager, const v
 	}
 }
 
-static void ValidateResponse(const string &response_body, QueryGraphManager &query_graph_manager,
-                             const NeuSORequest &request) {
+static vector<idx_t> ValidateResponse(const string &response_body, QueryGraphManager &query_graph_manager,
+                                      const NeuSORequest &request) {
 	yyjson_read_err error;
 	auto parse_buffer = response_body;
 	auto doc = yyjson_read_opts(parse_buffer.data(), parse_buffer.size(), YYJSON_READ_NOFLAG, nullptr, &error);
@@ -540,10 +540,11 @@ static void ValidateResponse(const string &response_body, QueryGraphManager &que
 	}
 	auto join_order = ParseJoinOrder(root);
 	ValidateRelationOrder(query_graph_manager, join_order, "join_order");
+	return join_order;
 }
 
-static void InvokeSidecar(QueryGraphManager &query_graph_manager, CostModel &cost_model, const NeuSOConfig &config,
-                          const vector<vector<idx_t>> &linear_orders) {
+static vector<idx_t> InvokeSidecar(QueryGraphManager &query_graph_manager, CostModel &cost_model,
+                                   const NeuSOConfig &config, const vector<vector<idx_t>> &linear_orders) {
 	ValidateLinearOrders(query_graph_manager, linear_orders);
 	auto request = BuildRequestJSON(query_graph_manager, cost_model, linear_orders);
 	duckdb_httplib::Client client(HTTPBaseURL(config));
@@ -557,7 +558,7 @@ static void InvokeSidecar(QueryGraphManager &query_graph_manager, CostModel &cos
 		throw InvalidInputException("NeuSO runtime sidecar returned HTTP status %d: %s", response->status,
 		                            response->body.c_str());
 	}
-	ValidateResponse(response->body, query_graph_manager, request);
+	return ValidateResponse(response->body, query_graph_manager, request);
 }
 
 } // namespace
@@ -572,21 +573,21 @@ void NeuSORuntimeBridge::EnsureStarted(DBConfig &db_config) {
 	GetSidecarProcess().EnsureStarted(config);
 }
 
-void NeuSORuntimeBridge::InvokeIfEnabled(QueryGraphManager &query_graph_manager, CostModel &cost_model,
-                                         const vector<vector<idx_t>> &linear_orders) {
+vector<idx_t> NeuSORuntimeBridge::InvokeIfEnabled(QueryGraphManager &query_graph_manager, CostModel &cost_model,
+                                                  const vector<vector<idx_t>> &linear_orders) {
 	auto config = GetConfig(query_graph_manager.context);
 	if (!config.enabled) {
-		return;
+		return {};
 	}
 	auto relation_count = query_graph_manager.relation_manager.NumRelations();
 	if (relation_count < PlanEnumerator::THRESHOLD_TO_SWAP_TO_APPROXIMATE) {
-		return;
+		return {};
 	}
 	auto &sidecar_process = GetSidecarProcess();
 	if (!sidecar_process.IsStartedFor(config)) {
 		sidecar_process.EnsureStarted(config);
 	}
-	InvokeSidecar(query_graph_manager, cost_model, config, linear_orders);
+	return InvokeSidecar(query_graph_manager, cost_model, config, linear_orders);
 }
 
 } // namespace duckdb

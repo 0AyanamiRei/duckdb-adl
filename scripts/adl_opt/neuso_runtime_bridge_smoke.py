@@ -4,7 +4,7 @@
 This script is intentionally outside DuckDB's default CI path. It verifies that
 a DuckDB-like runtime join-order request can be adapted into NeuSO's
 single-relation linear order interface and that the response has the shape
-DuckDB should later validate before applying a forced left-deep plan.
+DuckDB validates before applying as an experimental left-deep plan.
 """
 
 from __future__ import annotations
