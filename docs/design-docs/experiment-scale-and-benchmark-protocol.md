@@ -1,8 +1,8 @@
 # Experiment Scale and Benchmark Protocol
 
-English TL;DR: ADL-OPT uses a staged benchmark protocol: tiny TPC-H for development, TPC-H SF 0.1/SF 1 for validation, JOB/IMDB for the main thesis benchmark, and larger scale factors only as optional stress tests.
+English TL;DR: ADL-OPT uses a staged benchmark protocol: tiny TPC-H for development, TPC-H SF 0.1/SF 1 for validation, executable classic JOB/IMDB for the main thesis benchmark, and larger scale factors only as optional stress tests.
 
-Updated: 2026-05-06
+Updated: 2026-05-10
 
 Key terms: benchmark protocol, dataset scale, TPC-H, JOB, IMDB, smoke test, main experiment
 
@@ -20,7 +20,7 @@ ADL-OPT v0 只研究 offline join-order decision harness，不修改 DuckDB 查�
 | R1 | Minimal smoke | TPC-H | SF 0.01 | 10-30 MB | Verify DuckDB execution, checksum, profiling, and fixed-order SQL generation |
 | R2 | Routine development | TPC-H | SF 0.1 | 100-300 MB | Validate Q3/Q5/Q8/Q9/Q10 with default/original/heuristic/random orders |
 | R3 | Local validation | TPC-H | SF 1 | 1-3 GB | Measure whether join-order choices create meaningful execution-time differences |
-| R4 | Main thesis benchmark | JOB/IMDB | Fixed JOB data | 1-3 GB | Evaluate ADL-OPT on larger join graphs and skewed real-world-style predicates |
+| R4 | Main thesis benchmark | Classic JOB/IMDB | Fixed JOB data | 1-3 GB | Evaluate plan latency and plan quality on larger join graphs and skewed real-world-style predicates |
 | R5 | Optional stress | TPC-H | SF 10 | 10-30 GB | Stress a small query subset after the harness is stable |
 
 这些预算按本机 DuckDB 落库、profiling 文件、JSONL artifact 和少量中间结果预留。不同文件系统、压缩格式和临时目录配置会造成波动；实验报告中必须记录实际数据库文件大小和 artifact 目录大小。
@@ -52,7 +52,7 @@ R2 使用 TPC-H SF 0.1，覆盖 Q3、Q5、Q8、Q9、Q10。每个 query 至少生
 
 R3 使用 TPC-H SF 1。它不要求全量 TPC-H，只要求 join-heavy 查询子集。R3 用来判断 join-order variant 的性能差异是否大到足够写进论文，而不是只证明 harness 可以运行。
 
-R4 使用 JOB/IMDB 作为主论文 benchmark。仓库中已有 JOB/IMDB 查询和答案文件，加载脚本会读取 21 个 parquet 数据源。第一版主实验优先筛选 `n > 12` 的 inner equi-join-heavy 查询；不要求一次覆盖全部 JOB 查询。
+R4 使用 classic JOB/IMDB 作为主论文 benchmark。仓库中已有 JOB/IMDB 查询和答案文件，加载脚本会读取 21 个 parquet 数据源。第一版主实验优先筛选 `n >= 12` 的 connected regular inner pair graph 查询；不要求一次覆盖全部 JOB 查询。JOBLight 暂时不做 adapter，也不作为第一阶段验收内容。
 
 Large-join 静态入口先固定为 JOB/IMDB 29/28/33 系列：
 
@@ -64,6 +64,30 @@ python3 scripts/adl_opt/offline_large_join_harness.py \
 ```
 
 这一步不加载 JOB 数据，也不执行 DuckDB；它只验证 SQL graph extraction、fixture linear order、linear interval state 和 endpoint append transition。
+
+Classic JOB/IMDB 可执行 benchmark 入口是单独的 runner：
+
+```bash
+python3 scripts/adl_opt/job_benchmark_runner.py \
+  --duckdb ./build/reldebug/duckdb \
+  --database /path/to/imdb.duckdb \
+  --output /tmp/adl-opt-runs \
+  --run-id job_r1_smoke \
+  --queries 29a 29b 29c 28a 28b 28c 33a 33b 33c \
+  --execute \
+  --threads 1 \
+  --temp-directory /home/refrain/data/adl-opt/job-imdb/tmp \
+  --max-temp-directory-size 8GB \
+  --max-memory 4GB \
+  --warmup-runs 1 \
+  --measure-runs 3
+```
+
+这个 runner 不负责下载或完整构建 IMDB 数据库；它只验证目标表是否存在，然后执行 selected queries。输出采用 `adl-opt-runs/<run_id>/` 结构，包含 `workload.jsonl`、`variant.jsonl`、`plan_result.jsonl`、`run_result.jsonl`、`correctness.jsonl`、`summary.json/md`、`traces/` 和 `profiles/`。
+
+本地磁盘预算必须显式管控。JOB 查询可能产生很大的 DuckDB temp spill；runner 默认设置 `<database>.tmp-safe`、`max_temp_directory_size=8GB`、`max_memory=4GB`，但正式实验命令仍建议显式传入这些参数，并在每批运行后检查 temp 目录大小。
+
+valid random endpoint path 会被改写成显式 `JOIN ... ON ...` tree，并用 `disabled_optimizers='join_order'` 测量。IKKBZ top-1 和 NeuSO runtime variant 当前只验证导出/sidecar 通路，不把返回 order 应用到最终 plan。
 
 R5 是可选压力实验。只有在 R2/R3/R4 都稳定后，才选择少量 TPC-H SF 10 查询运行。R5 不作为毕设通过条件。
 
@@ -79,7 +103,7 @@ TPC-H smoke/development 查询固定为：
 
 其中 Q3、Q5、Q8 是最小验收子集。Q9 和 Q10 用于扩大 join 图与谓词形态覆盖。
 
-JOB/IMDB 主实验应优先选择：
+Classic JOB/IMDB 主实验应优先选择：
 
 - 只包含 inner join 或能被 DuckDB 当前 join-order optimizer 处理的 comparison join。
 - join relation 数量大于 12，能触发 DuckDB large-join approximate path。
@@ -87,6 +111,12 @@ JOB/IMDB 主实验应优先选择：
 - DuckDB default、original order 和随机合法 order 都能稳定通过 correctness check。
 
 第一阶段不把 outer join、ASOF、MARK、SINGLE、dependent/delim join 或复杂 correlated subquery 作为主要 workload。
+
+第一批固定查询：
+
+- 29a, 29b, 29c.
+- 28a, 28b, 28c.
+- 33a, 33b, 33c.
 
 ## Benchmark Modes
 
@@ -133,6 +163,8 @@ CMAKE_BUILD_PARALLEL_LEVEL=$BUILD_JOBS BUILD_TPCH=1 make reldebug
 Large-join endpoint 实验额外比较：
 
 - DuckDB current approximate greedy.
+- IKKBZ top-1 export validation, DuckDB plan unchanged.
+- NeuSO runtime validation, DuckDB plan unchanged.
 - Fixture linear order plus ADL-OPT endpoint path.
 - Random endpoint paths over the same linear order.
 
@@ -146,7 +178,14 @@ Random order 数量按轮次递增：
 
 ## Measurement Rules
 
-每个 variant 至少 warm up 1 次，正式测量 5 次。论文主结果推荐正式测量 7 次，并报告 P50/P95。
+JOB/IMDB 第一阶段每个 variant warm up 1 次，正式测量 3 次，并报告 P50/P95/P99/max。由于样本数较小，P95/P99 只作为本地小样本参考；如果后续写论文主结果，可以单独提高 `measure_runs`。
+
+JOB/IMDB 主测评拆成两类 latency：
+
+- Plan latency: 每个 query/variant 只执行一次 `EXPLAIN <query>` 来获取 `explain_hash` 和确认 plan 可生成；正式指标来自 DuckDB detailed profiling 中的 parser、planner、optimizer、physical planner 阶段时间，不使用外部子进程 wall-clock。
+- Execution latency: 对每个 query/variant warmup 1 次、measure 3 次，正式指标来自 DuckDB detailed profiling 的 `latency - plan phases`，用 physical execution 时间代表 plan quality。
+
+runner 会把同一个 variant 的 warmup/measure 放在同一个 DuckDB CLI session 里执行，不使用 prepared statement。`duckdb_wall_time_samples_ms` 只作为诊断字段，不能作为论文主结果。`sql_original` 是参考 baseline；失败或 timeout 会被记录，但不阻断整轮 benchmark，也不进入 speedup/regret 的成功样本集合。
 
 每次运行必须记录：
 
@@ -158,9 +197,10 @@ Random order 数量按轮次递增：
 - optimizer settings
 - thread count
 - timeout
-- latency
-- optimizer time if available
-- execution time if available
+- plan latency samples and P50/P95/P99/max
+- execution latency samples and P50/P95/P99/max
+- optimizer time from detailed profiling if available
+- physical execution time from detailed profiling if available
 - EXPLAIN hash
 - result row count
 - result checksum
@@ -170,7 +210,8 @@ Random order 数量按轮次递增：
 
 - speedup versus DuckDB default
 - regret versus sampled oracle
-- P50/P95 latency
+- plan latency P50/P95/P99/max
+- execution latency P50/P95/P99/max
 - optimizer time
 - execution time
 - failed order count
@@ -200,7 +241,7 @@ Profiling artifact 用于补充 optimizer/execution time。R1 允许 profiling �
 
 - Dataset: TPC-H SF 1 plus JOB/IMDB.
 - Disk budget: 8-10 GB.
-- Queries: TPC-H Q3/Q5/Q8/Q9/Q10 plus 20-40 JOB/IMDB queries.
+- Queries: TPC-H Q3/Q5/Q8/Q9/Q10 plus selected classic JOB/IMDB queries.
 - Random orders: 20-100 per query, constrained by timeout.
 
 可选压力资源：

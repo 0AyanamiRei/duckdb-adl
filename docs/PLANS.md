@@ -2,7 +2,7 @@
 
 English TL;DR: This is the index of ADL-OPT execution plans. Active plans are live work; completed plans record what actually happened.
 
-Updated: 2026-05-07
+Updated: 2026-05-10
 
 Key terms: execution plan, active plan, completed plan, tech debt, harness
 
@@ -12,6 +12,7 @@ Key terms: execution plan, active plan, completed plan, tech debt, harness
 - `docs/exec-plans/active/0002-r1-tpch-execution-loop.md`: implement the SF0.01 TPC-H R1 executable loop, including data reuse, fixed join-order execution, correctness checks, latency/profile collection, and summary reporting.
 - `docs/exec-plans/active/0003-large-join-endpoint-harness.md`: narrow ADL-OPT to n>12 large joins and add a static JOB/IMDB endpoint-append harness.
 - `docs/exec-plans/active/0004-r5-ikkbz-linearization-export.md`: add DuckDB kernel export-only IKKBZ/MST large-join linearization metadata.
+- `docs/exec-plans/active/0005-job-imdb-benchmark-runner.md`: add an executable classic JOB/IMDB benchmark runner for correctness, plan latency, and execution latency.
 
 ## Completed
 
