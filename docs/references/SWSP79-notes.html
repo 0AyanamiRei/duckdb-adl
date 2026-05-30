@@ -1,0 +1,1309 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Monma &amp; Sidney 1979 — 带串联-并联优先约束的排序问题 · 论文笔记</title>
+<style>
+  :root {
+    --bg: #faf9f6; --text: #1a1a1a; --accent: #7c3aed;
+    --border: #e0dcd0; --code-bg: #f3f1eb; --muted: #6b6b6b;
+    --th-bg: #f0ede5; --fig-bg: #fdfdfc;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "Noto Serif SC", "Source Han Serif SC", "STSong", "SimSun", Georgia, serif;
+    line-height: 1.85; color: var(--text); background: var(--bg);
+    max-width: 900px; margin: 0 auto; padding: 3rem 1.5rem 6rem;
+  }
+  h1 { font-size: 2rem; margin-bottom: 0.3rem; font-weight: 700; }
+  h2 { font-size: 1.35rem; margin: 2.8rem 0 0.8rem; padding-bottom: 0.35rem; border-bottom: 2px solid var(--accent); }
+  h3 { font-size: 1.1rem; margin: 1.8rem 0 0.5rem; color: #333; }
+  h4 { font-size: 1rem; margin: 1.2rem 0 0.4rem; }
+  p { margin: 0.65rem 0; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .meta { color: var(--muted); font-size: 0.9rem; margin-bottom: 2rem; }
+
+  .callout {
+    border-left: 4px solid var(--accent); background: #f5f3ff;
+    padding: 0.7rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; font-size: 0.95rem;
+  }
+  .callout.warn {
+    border-left-color: #f59e0b; background: #fffbeb;
+  }
+  .callout.info {
+    border-left-color: #10b981; background: #ecfdf5;
+  }
+  .callout.red {
+    border-left-color: #ef4444; background: #fef2f2;
+  }
+
+  pre {
+    background: var(--code-bg); border: 1px solid var(--border);
+    border-radius: 6px; padding: 0.85rem 1rem; overflow-x: auto;
+    font-family: "SF Mono","Fira Code","Consolas","Noto Sans Mono CJK SC",monospace;
+    font-size: 0.88rem; line-height: 1.55; margin: 0.75rem 0;
+  }
+  code {
+    font-family: "SF Mono","Fira Code","Consolas","Noto Sans Mono CJK SC",monospace;
+    font-size: 0.9em; background: var(--code-bg); padding: 0.1em 0.35em; border-radius: 3px;
+  }
+  pre code { background: none; padding: 0; }
+
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: 0.92rem; }
+  th, td { border: 1px solid var(--border); padding: 0.45rem 0.7rem; text-align: left; }
+  th { background: var(--th-bg); font-weight: 600; }
+
+  ul, ol { margin: 0.5rem 0 0.5rem 1.6rem; }
+  li { margin: 0.25rem 0; }
+
+  .toc { margin: 1.2rem 0 2rem; }
+  .toc li { margin: 0.15rem 0; }
+
+  hr { border: none; border-top: 1px solid var(--border); margin: 2.5rem 0; }
+
+  .tag {
+    display: inline-block; background: #ede9fe; color: #5b21b6;
+    font-size: 0.78rem; padding: 0.15em 0.55em; border-radius: 4px;
+    margin-right: 0.3rem; font-family: sans-serif;
+  }
+
+  /* ===== Diagrams ===== */
+  .diagram {
+    margin: 1.4rem 0; padding: 1rem 1rem 0.6rem;
+    background: var(--fig-bg); border: 1px solid var(--border);
+    border-radius: 8px; text-align: center;
+  }
+  .diagram figcaption {
+    font-size: 0.88rem; color: var(--muted); margin-top: 0.4rem;
+    font-style: italic;
+  }
+  .diagram svg { max-width: 100%; }
+
+  .diagram-row {
+    display: flex; flex-wrap: wrap; gap: 1rem; justify-content: center;
+    margin: 1rem 0;
+  }
+  .diagram-row .diagram { flex: 1; min-width: 260px; margin: 0; }
+
+  .footnotes { font-size: 0.85rem; color: var(--muted); border-top: 1px solid var(--border); padding-top: 1rem; margin-top: 3rem; }
+
+  .key-term {
+    background: #fef9c3; padding: 0.1em 0.3em; border-radius: 2px;
+    font-weight: 600;
+  }
+
+  @media (max-width: 600px) {
+    body { padding: 1.5rem 1rem 4rem; }
+    pre { font-size: 0.8rem; padding: 0.6rem 0.7rem; }
+  }
+</style>
+</head>
+<body>
+
+<h1>📐 SWSP'79 论文笔记</h1>
+<p class="meta">
+  <strong>论文：</strong> Monma, C. L. &amp; Sidney, J. B. — <em>Sequencing with Series-Parallel Precedence Constraints</em>, Math. Oper. Res. 4(3), 1979, pp. 215–224.<br>
+  <strong>定位：</strong> 排序/调度理论的奠基性论文，IKKBZ 算法的理论根基。<br>
+  <strong>日期：</strong> 2026-05-31
+</p>
+
+<nav>
+<ol class="toc">
+  <li><a href="#s0">0. 为什么这篇论文重要？它与 IKKBZ 的关系</a></li>
+  <li><a href="#s1">1. 基本定义与记号</a></li>
+  <li><a href="#s2">2. 无约束排序与 API 性质 (§2)</a></li>
+  <li><a href="#s3">3. 并联链约束与 ASI 性质 (§3)</a></li>
+  <li><a href="#s4">4. 串联-并联优先约束与 SND 性质 (§4)</a></li>
+  <li><a href="#s5">5. 示例问题 (§5)</a></li>
+  <li><a href="#s6">6. 结论与评注 (§6)</a></li>
+  <li><a href="#summary">7. 总结：核心概念图谱</a></li>
+</ol>
+</nav>
+
+<hr>
+
+<!-- ================================================================== -->
+<h2 id="s0">0. 为什么这篇论文重要？它与 IKKBZ 的关系</h2>
+
+<div class="callout info">
+<strong>一句话概括：</strong>Monma &amp; Sidney (1979) 定义了 <strong>ASI（相邻序列交换）性质</strong> 和针对 <strong>串联-并联优先约束</strong> 的通用算法框架。IKKBZ (1986) 的 OPT 算法本质上就是这个框架在数据库 join 排序问题上的一个具体实例。
+</div>
+
+<table>
+  <tr><th>SWSP'79 中的概念</th><th>IKKBZ 中的对应</th></tr>
+  <tr><td>Job（作业）</td><td>关系（relation）</td></tr>
+  <tr><td>偏好关系 &lt;（preference relation）</td><td>rank 函数：rank 越小越优先</td></tr>
+  <tr><td>ASI 性质</td><td>Lemma 1：<code>C(AUVB) ≤ C(AVUB) ⇔ rank(U) ≤ rank(V)</code></td></tr>
+  <tr><td>串联-并联优先图</td><td>有根 join 树（树是串联-并联图的特例）</td></tr>
+  <tr><td>复合 Job（compound job）/ String</td><td>复合节点（composite node）</td></tr>
+  <tr><td>并联链算法（Parallel-Chains Algorithm）</td><td>OPT 的归一化步骤（merge + normalize）</td></tr>
+  <tr><td>串联-并联算法（Series-Parallel Algorithm）</td><td>OPT 整体自底向上框架</td></tr>
+</table>
+
+<p>理解这篇论文，就理解了 IKKBZ 算法<strong>为什么正确</strong>以及<strong>为什么是 O(N log N)</strong>。</p>
+
+<hr>
+
+<!-- ================================================================== -->
+<h2 id="s1">1. 基本定义与记号 (§1)</h2>
+
+<h3>1.1 Job 与 Sequence</h3>
+
+<p>一个 <span class="key-term">job</span>（作业）是被排序的基本单位。每个 job 由若干参数刻画（如处理时间、权重等）。</p>
+
+<p>给定 job 集合 <em>J</em> = {1, 2, …, n}，一个 <span class="key-term">sequence</span>（序列）<em>s</em> 是从 {1,…,k} 到 <em>J</em> 的映射：<em>s</em> = (s(1), s(2), …, s(k))。同一 job 可出现多次（视为副本）。<em>J</em> 的一个排列（permutation）记为 Π。</p>
+
+<p>一个 <span class="key-term">cost function</span>（代价函数）<em>f</em> 为每个序列赋予一个实数值（代价）。<strong>排序问题</strong>即是：在所有可行排列 F 中，找到一个使 <em>f</em> 最小的排列。</p>
+
+<h3>1.2 优先约束（Precedence Constraints）</h3>
+
+<figure class="diagram">
+<svg width="560" height="195" viewBox="0 0 560 195">
+  <!-- Precedence graph example -->
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#5b21b6"/>
+    </marker>
+  </defs>
+  <!-- Left: graph -->
+  <text x="30" y="22" font-size="13" font-weight="600" fill="#333">优先图 G = (J, R)</text>
+
+  <!-- Node 1 (top center) -->
+  <circle cx="140" cy="45" r="22" fill="#ede9fe" stroke="#7c3aed" stroke-width="2"/>
+  <text x="140" y="50" text-anchor="middle" font-size="14" font-weight="600" fill="#5b21b6">1</text>
+
+  <!-- Node 2 (middle left) -->
+  <circle cx="55" cy="115" r="22" fill="#ede9fe" stroke="#7c3aed" stroke-width="2"/>
+  <text x="55" y="120" text-anchor="middle" font-size="14" font-weight="600" fill="#5b21b6">2</text>
+
+  <!-- Node 3 (middle right) -->
+  <circle cx="225" cy="115" r="22" fill="#ede9fe" stroke="#7c3aed" stroke-width="2"/>
+  <text x="225" y="120" text-anchor="middle" font-size="14" font-weight="600" fill="#5b21b6">3</text>
+
+  <!-- Node 4 (bottom center) -->
+  <circle cx="140" cy="170" r="22" fill="#ede9fe" stroke="#7c3aed" stroke-width="2"/>
+  <text x="140" y="175" text-anchor="middle" font-size="14" font-weight="600" fill="#5b21b6">4</text>
+
+  <!-- arrows: 1→2, 1→3, 2→4, 3→4 -->
+  <line x1="122" y1="57" x2="70" y2="95" stroke="#7c3aed" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="158" y1="57" x2="210" y2="95" stroke="#7c3aed" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="70" y1="135" x2="120" y2="152" stroke="#7c3aed" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="210" y1="135" x2="160" y2="152" stroke="#7c3aed" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <text x="72" y="72" font-size="11" fill="#7c3aed">1→2</text>
+  <text x="195" y="72" font-size="11" fill="#7c3aed">1→3</text>
+  <text x="75" y="160" font-size="11" fill="#7c3aed">2→4</text>
+  <text x="180" y="160" font-size="11" fill="#7c3aed">3→4</text>
+
+  <!-- Right: explanation -->
+  <text x="300" y="55" font-size="12" fill="#444">
+    <tspan x="300" dy="0">含义：job i 必须在 job j 之前</tspan>
+    <tspan x="300" dy="22">可行排列必须满足所有箭头方向。</tspan>
+    <tspan x="300" dy="30">例：(1,2,3,4) ✓</tspan>
+    <tspan x="300" dy="22">　　(1,3,2,4) ✓</tspan>
+    <tspan x="300" dy="22">　　(2,1,3,4) ✗  (4,1,2,3) ✗</tspan>
+  </text>
+</svg>
+<figcaption>图1：一个简单优先图。1 必须先于 2、3；2 和 3 必须先于 4。2 和 3 之间无约束，可任意排序。</figcaption>
+</figure>
+
+<h3>1.3 Job Module（作业模块）</h3>
+
+<p><span class="key-term">Job module</span> 是本文最核心的结构概念。子集 J' ⊆ J 是一个 job module，当且仅当对每个 J' 外的 job k，以下三者之一成立：</p>
+
+<figure class="diagram">
+<svg width="640" height="200" viewBox="0 0 640 200">
+  <defs>
+    <marker id="arrow2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#5b21b6"/>
+    </marker>
+  </defs>
+  <!-- Case a -->
+  <rect x="10" y="10" width="190" height="170" rx="10" fill="#f5f3ff" stroke="#ddd" stroke-width="1"/>
+  <text x="105" y="32" text-anchor="middle" font-size="12" font-weight="600" fill="#5b21b6">(a) k → 所有 i ∈ J'</text>
+  <circle cx="55" cy="85" r="18" fill="#fef3c7" stroke="#f59e0b" stroke-width="1.5"/>
+  <text x="55" y="90" text-anchor="middle" font-size="12" fill="#92400e">k</text>
+  <rect x="105" y="55" width="80" height="60" rx="12" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.5" stroke-dasharray="4,2"/>
+  <text x="145" y="90" text-anchor="middle" font-size="11" fill="#5b21b6">J' (module)</text>
+  <line x1="73" y1="85" x2="105" y2="75" stroke="#7c3aed" stroke-width="1.5" marker-end="url(#arrow2)"/>
+  <line x1="73" y1="85" x2="105" y2="95" stroke="#7c3aed" stroke-width="1.5" marker-end="url(#arrow2)"/>
+
+  <!-- Case b -->
+  <rect x="220" y="10" width="190" height="170" rx="10" fill="#f5f3ff" stroke="#ddd" stroke-width="1"/>
+  <text x="315" y="32" text-anchor="middle" font-size="12" font-weight="600" fill="#5b21b6">(b) 所有 i ∈ J' → k</text>
+  <circle cx="365" cy="85" r="18" fill="#fef3c7" stroke="#f59e0b" stroke-width="1.5"/>
+  <text x="365" y="90" text-anchor="middle" font-size="12" fill="#92400e">k</text>
+  <rect x="245" y="55" width="80" height="60" rx="12" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.5" stroke-dasharray="4,2"/>
+  <text x="285" y="90" text-anchor="middle" font-size="11" fill="#5b21b6">J' (module)</text>
+  <line x1="325" y1="75" x2="347" y2="85" stroke="#7c3aed" stroke-width="1.5" marker-end="url(#arrow2)"/>
+  <line x1="325" y1="95" x2="347" y2="85" stroke="#7c3aed" stroke-width="1.5" marker-end="url(#arrow2)"/>
+
+  <!-- Case c -->
+  <rect x="430" y="10" width="200" height="170" rx="10" fill="#f5f3ff" stroke="#ddd" stroke-width="1"/>
+  <text x="530" y="32" text-anchor="middle" font-size="12" font-weight="600" fill="#5b21b6">(c) k 与 J' 无约束</text>
+  <circle cx="485" cy="85" r="18" fill="#fef3c7" stroke="#f59e0b" stroke-width="1.5"/>
+  <text x="485" y="90" text-anchor="middle" font-size="12" fill="#92400e">k</text>
+  <rect x="540" y="55" width="80" height="60" rx="12" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.5" stroke-dasharray="4,2"/>
+  <text x="580" y="90" text-anchor="middle" font-size="11" fill="#5b21b6">J' (module)</text>
+  <text x="530" y="155" text-anchor="middle" font-size="10" fill="#888">(无箭头连接)</text>
+  <line x1="495" y1="75" x2="540" y2="75" stroke="#ccc" stroke-width="1" stroke-dasharray="3,3"/>
+</svg>
+<figcaption>图2：Job module 的三种情况。J' 对外部而言是一个"黑盒"——外部节点要么全部在 J' 之前、要么全部在 J' 之后、要么全部与 J' 无关。这是串联-并联结构可递归分解的根本原因。</figcaption>
+</figure>
+
+<h3>1.4 串联与并联（Series &amp; Parallel）</h3>
+
+<p>两个不相交的优先图 G₁ = (J₁, R₁) 和 G₂ = (J₂, R₂)：</p>
+
+<div class="diagram-row">
+<figure class="diagram">
+<svg width="260" height="130" viewBox="0 0 260 130">
+  <defs>
+    <marker id="arrow3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#7c3aed"/>
+    </marker>
+  </defs>
+  <text x="130" y="22" text-anchor="middle" font-size="13" font-weight="600" fill="#5b21b6">串联 (Series)</text>
+  <rect x="20" y="40" width="80" height="50" rx="10" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.5"/>
+  <text x="60" y="63" text-anchor="middle" font-size="11" fill="#5b21b6">G₁</text>
+  <text x="60" y="79" text-anchor="middle" font-size="9" fill="#888">J₁</text>
+  <rect x="160" y="40" width="80" height="50" rx="10" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.5"/>
+  <text x="200" y="63" text-anchor="middle" font-size="11" fill="#5b21b6">G₂</text>
+  <text x="200" y="79" text-anchor="middle" font-size="9" fill="#888">J₂</text>
+  <line x1="100" y1="65" x2="158" y2="65" stroke="#7c3aed" stroke-width="2" marker-end="url(#arrow3)"/>
+  <text x="130" y="120" text-anchor="middle" font-size="11">∀ i∈J₁, j∈J₂ : i → j</text>
+</svg>
+<figcaption>串联：G₁ 的每个 job 必须在 G₂ 的每个 job 之前。</figcaption>
+</figure>
+
+<figure class="diagram">
+<svg width="260" height="130" viewBox="0 0 260 130">
+  <text x="130" y="22" text-anchor="middle" font-size="13" font-weight="600" fill="#5b21b6">并联 (Parallel)</text>
+  <rect x="20" y="40" width="80" height="50" rx="10" fill="#fce7f3" stroke="#db2777" stroke-width="1.5"/>
+  <text x="60" y="63" text-anchor="middle" font-size="11" fill="#9d174d">G₁</text>
+  <text x="60" y="79" text-anchor="middle" font-size="9" fill="#888">J₁</text>
+  <rect x="160" y="40" width="80" height="50" rx="10" fill="#fce7f3" stroke="#db2777" stroke-width="1.5"/>
+  <text x="200" y="63" text-anchor="middle" font-size="11" fill="#9d174d">G₂</text>
+  <text x="200" y="79" text-anchor="middle" font-size="9" fill="#888">J₂</text>
+  <text x="130" y="120" text-anchor="middle" font-size="11">∀ i∈J₁, j∈J₂ : i↛j 且 j↛i</text>
+</svg>
+<figcaption>并联：G₁ 与 G₂ 之间没有任何优先约束，可任意交错。</figcaption>
+</figure>
+</div>
+
+<h3>1.5 串联-并联图（Series-Parallel Graph）</h3>
+
+<div class="callout">
+<strong>定义：</strong>一个优先图是 <span class="key-term">串联-并联图</span>，当且仅当可以通过以下操作将其递归地归约为一条链：<strong>找到任意一个并联链 job module，将其替换为它的 jobs 的一条可行链。</strong>
+</div>
+
+<figure class="diagram">
+<svg width="640" height="300" viewBox="0 0 640 300">
+  <defs>
+    <marker id="asp" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#5b21b6"/>
+    </marker>
+  </defs>
+  <!-- Title row -->
+  <text x="100" y="25" text-anchor="middle" font-size="13" font-weight="600" fill="#444">原始 SP 图</text>
+  <text x="400" y="25" text-anchor="middle" font-size="13" font-weight="600" fill="#444">分解树（decomposition tree）</text>
+
+  <!-- Original graph -->
+  <circle cx="60" cy="100" r="18" fill="#ede9fe" stroke="#7c3aed" stroke-width="2"/>
+  <text x="60" y="105" text-anchor="middle" font-size="13" font-weight="600" fill="#5b21b6">1</text>
+
+  <circle cx="60" cy="170" r="18" fill="#ede9fe" stroke="#7c3aed" stroke-width="2"/>
+  <text x="60" y="175" text-anchor="middle" font-size="13" font-weight="600" fill="#5b21b6">2</text>
+
+  <circle cx="150" cy="100" r="18" fill="#ede9fe" stroke="#7c3aed" stroke-width="2"/>
+  <text x="150" y="105" text-anchor="middle" font-size="13" font-weight="600" fill="#5b21b6">3</text>
+
+  <circle cx="150" cy="170" r="18" fill="#ede9fe" stroke="#7c3aed" stroke-width="2"/>
+  <text x="150" y="175" text-anchor="middle" font-size="13" font-weight="600" fill="#5b21b6">4</text>
+
+  <line x1="78" y1="100" x2="130" y2="100" stroke="#7c3aed" stroke-width="2" marker-end="url(#asp)"/>
+  <line x1="78" y1="170" x2="130" y2="170" stroke="#7c3aed" stroke-width="2" marker-end="url(#asp)"/>
+
+  <!-- Decomposition tree on right -->
+  <!-- S node at top -->
+  <rect x="370" y="55" width="50" height="28" rx="6" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.5"/>
+  <text x="395" y="74" text-anchor="middle" font-size="12" font-weight="600" fill="#5b21b6">S</text>
+
+  <!-- P node -->
+  <rect x="370" y="115" width="50" height="28" rx="6" fill="#fce7f3" stroke="#db2777" stroke-width="1.5"/>
+  <text x="395" y="134" text-anchor="middle" font-size="12" font-weight="600" fill="#9d174d">P</text>
+  <line x1="395" y1="83" x2="395" y2="113" stroke="#555" stroke-width="1.5"/>
+
+  <!-- S node left -->
+  <rect x="300" y="175" width="50" height="28" rx="6" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.5"/>
+  <text x="325" y="194" text-anchor="middle" font-size="12" font-weight="600" fill="#5b21b6">S</text>
+  <line x1="380" y1="143" x2="335" y2="173" stroke="#555" stroke-width="1.5"/>
+
+  <!-- leaf 1 -->
+  <circle cx="305" cy="240" r="14" fill="#fff" stroke="#7c3aed" stroke-width="1.5"/>
+  <text x="305" y="245" text-anchor="middle" font-size="12" fill="#5b21b6">1</text>
+  <line x1="315" y1="203" x2="308" y2="226" stroke="#555" stroke-width="1"/>
+
+  <!-- leaf 3 -->
+  <circle cx="345" cy="240" r="14" fill="#fff" stroke="#7c3aed" stroke-width="1.5"/>
+  <text x="345" y="245" text-anchor="middle" font-size="12" fill="#5b21b6">3</text>
+  <line x1="330" y1="203" x2="342" y2="226" stroke="#555" stroke-width="1"/>
+
+  <!-- S node right -->
+  <rect x="420" y="175" width="50" height="28" rx="6" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.5"/>
+  <text x="445" y="194" text-anchor="middle" font-size="12" font-weight="600" fill="#5b21b6">S</text>
+  <line x1="410" y1="143" x2="435" y2="173" stroke="#555" stroke-width="1.5"/>
+
+  <!-- leaf 2 -->
+  <circle cx="425" cy="240" r="14" fill="#fff" stroke="#7c3aed" stroke-width="1.5"/>
+  <text x="425" y="245" text-anchor="middle" font-size="12" fill="#5b21b6">2</text>
+  <line x1="435" y1="203" x2="428" y2="226" stroke="#555" stroke-width="1"/>
+
+  <!-- leaf 4 -->
+  <circle cx="465" cy="240" r="14" fill="#fff" stroke="#7c3aed" stroke-width="1.5"/>
+  <text x="465" y="245" text-anchor="middle" font-size="12" fill="#5b21b6">4</text>
+  <line x1="450" y1="203" x2="462" y2="226" stroke="#555" stroke-width="1"/>
+
+  <!-- Legend -->
+  <rect x="540" y="55" width="90" height="55" rx="8" fill="#faf9f6" stroke="#ddd" stroke-width="1"/>
+  <rect x="550" y="62" width="16" height="12" rx="3" fill="#ede9fe" stroke="#7c3aed" stroke-width="1"/>
+  <text x="572" y="72" font-size="10" fill="#444">S = 串联</text>
+  <rect x="550" y="84" width="16" height="12" rx="3" fill="#fce7f3" stroke="#db2777" stroke-width="1"/>
+  <text x="572" y="94" font-size="10" fill="#444">P = 并联</text>
+</svg>
+<figcaption>图3：一个串联-并联图及其分解树。S 节点表示串联组合，P 节点表示并联组合。叶子为单个 job。任何 SP 图都可表达为一棵这样的二叉树。</figcaption>
+</figure>
+
+<h3>1.6 复合 Job 与 String</h3>
+
+<ul>
+  <li><span class="key-term">复合 Job（compound job）</span>：J' ⊆ J 在<strong>每个</strong>可行排列中必须连续出现。</li>
+  <li><span class="key-term">String</span>：复合 job 且内部顺序已固定。</li>
+</ul>
+
+<p>可以直观理解：string = 已被"打包"好的一串 job，在后续排序中视为不可分割的原子单元。这正是 IKKBZ 中"复合节点"概念的来历。</p>
+
+<hr>
+
+<!-- ================================================================== -->
+<h2 id="s2">2. 无约束排序与 API 性质 (§2)</h2>
+
+<p><span class="tag">基础定理</span> <span class="tag">Smith 1956</span> <span class="tag">API 性质</span></p>
+
+<h3>2.0 Smith (1956) 的历史背景</h3>
+
+<p>Wayne E. Smith 的论文 <em>"Various Optimizers for Single-Stage Production"</em> 发表于 <em>Naval Research Logistics Quarterly</em>, Vol. 3 (1956), pp. 59–66。它研究的是一个基本的<strong>单机排序问题</strong>（single-stage / single-machine scheduling）：</p>
+
+<div class="callout">
+<strong>问题设定：</strong>有 n 个 job 要在一台机器上依次加工。每个 job j 有处理时间 pⱼ 和一个代价函数（cost function）。目标是找到一个排列（加工顺序）使总代价最小。<strong>关键限制：所有排列都是可行的（无优先约束）。</strong>
+</div>
+
+<p>Smith 在论文中考虑了几种具体的代价函数，其中最著名的是：</p>
+
+<table>
+  <tr><th>代价函数</th><th>记号</th><th>最优规则</th><th>偏好关系</th></tr>
+  <tr>
+    <td><strong>总加权完成时间</strong></td>
+    <td>ΣwⱼCⱼ</td>
+    <td><strong>WSPT 规则</strong>（Smith's rule）</td>
+    <td>i &lt; j ⇔ pᵢ/wᵢ &lt; pⱼ/wⱼ</td>
+  </tr>
+  <tr>
+    <td><strong>总完成时间</strong></td>
+    <td>ΣCⱼ</td>
+    <td><strong>SPT 规则</strong>（最短处理时间优先）</td>
+    <td>i &lt; j ⇔ pᵢ &lt; pⱼ</td>
+  </tr>
+  <tr>
+    <td><strong>最大延迟</strong></td>
+    <td>L<sub>max</sub></td>
+    <td><strong>EDD 规则</strong>（最早截止期优先）</td>
+    <td>i &lt; j ⇔ dᵢ &lt; dⱼ</td>
+  </tr>
+</table>
+
+<p>这些具体规则的共同点是：<strong>把 job 按某个比值/参数排序就是最优解</strong>。Smith 的洞察在于：这不是巧合，而是因为这些代价函数共享同一个深层数学结构——<strong>相邻对交换性质</strong>（API）。</p>
+
+<figure class="diagram">
+<svg width="680" height="195" viewBox="0 0 680 195">
+  <!-- WSPT title -->
+  <text x="30" y="22" font-size="13" font-weight="600" fill="#444">WSPT 规则为何正确 —— 相邻交换的直观理解：</text>
+
+  <!-- Before -->
+  <text x="40" y="65" font-size="12" fill="#888">交换前：</text>
+  <rect x="110" y="45" width="55" height="36" rx="6" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.5"/>
+  <text x="137" y="68" text-anchor="middle" font-size="12" fill="#5b21b6">…</text>
+
+  <rect x="175" y="45" width="65" height="36" rx="6" fill="#fef3c7" stroke="#f59e0b" stroke-width="2"/>
+  <text x="207" y="60" text-anchor="middle" font-size="11" font-weight="600" fill="#92400e">job i</text>
+  <text x="207" y="74" text-anchor="middle" font-size="9" fill="#b45309">pᵢ/wᵢ = 5</text>
+
+  <rect x="250" y="45" width="65" height="36" rx="6" fill="#dbeafe" stroke="#2563eb" stroke-width="2"/>
+  <text x="282" y="60" text-anchor="middle" font-size="11" font-weight="600" fill="#1e40af">job j</text>
+  <text x="282" y="74" text-anchor="middle" font-size="9" fill="#2563eb">pⱼ/wⱼ = 3</text>
+
+  <rect x="325" y="45" width="55" height="36" rx="6" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.5"/>
+  <text x="352" y="68" text-anchor="middle" font-size="12" fill="#5b21b6">…</text>
+
+  <!-- Arrow -->
+  <text x="415" y="68" text-anchor="middle" font-size="22" fill="#ef4444">⟹</text>
+
+  <!-- After -->
+  <text x="455" y="65" font-size="12" fill="#888">交换后：</text>
+  <rect x="520" y="45" width="55" height="36" rx="6" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.5"/>
+  <text x="547" y="68" text-anchor="middle" font-size="12" fill="#5b21b6">…</text>
+
+  <rect x="585" y="45" width="65" height="36" rx="6" fill="#dbeafe" stroke="#2563eb" stroke-width="2"/>
+  <text x="617" y="60" text-anchor="middle" font-size="11" font-weight="600" fill="#1e40af">job j</text>
+  <text x="617" y="74" text-anchor="middle" font-size="9" fill="#2563eb">pⱼ/wⱼ = 3</text>
+
+  <!-- Derivation box -->
+  <rect x="60" y="105" width="560" height="80" rx="10" fill="#f5f3ff" stroke="#ddd" stroke-width="1"/>
+  <text x="80" y="125" font-size="12" fill="#5b21b6">代价差计算：</text>
+  <text x="80" y="145" font-size="12" fill="#444">Δ = cost(…i,j…) − cost(…j,i…) = (wᵢ+wⱼ)·pᵢ + wⱼ·pⱼ − (wᵢ+wⱼ)·pⱼ − wᵢ·pᵢ</text>
+  <text x="80" y="165" font-size="12" fill="#444">　　　　　　　　　　　　　　　　 = wⱼ·pᵢ − wᵢ·pⱼ = wᵢ·wⱼ · (pᵢ/wᵢ − pⱼ/wⱼ)</text>
+  <text x="80" y="182" font-size="12" fill="#7c3aed"><strong>由于 pᵢ/wᵢ = 5 > pⱼ/wⱼ = 3，Δ > 0 → 交换后代价更低 ✓</strong></text>
+</svg>
+<figcaption>图4：Smith 的相邻交换分析。比较两个相邻 job 交换前后的代价差，发现差值只依赖于它们的 p/w 比值——与它们在序列中处于什么位置、前后有什么无关。这就是 API 的核心。</figcaption>
+</figure>
+
+<h3>2.1 相邻交换方法的核心机制</h3>
+
+<p>Smith 的真正贡献不在于 WSPT 这个具体规则，而在于他发现的<strong>一般性方法论</strong>——相邻对交换（adjacent pairwise interchange），以及这方法得以成立的数学条件——API 性质。</p>
+
+<div class="callout">
+<strong>相邻交换方法的逻辑链条：</strong>
+<ol>
+  <li>对任意两个 job i, j，计算将 (…i,j…) 交换为 (…j,i…) 的<strong>代价差</strong></li>
+  <li>如果代价差可以分解为：<code>q(u) · [φ(i) − φ(j)]</code> 的形式——
+      即<strong>上下文因子 × (i 和 j 的函数差)</strong></li>
+  <li>那么只要 φ(i) &lt; φ(j)，交换就不增加代价；反之亦然</li>
+  <li>此时定义 <strong>i &lt; j 当且仅当 φ(i) &lt; φ(j)</strong>，就得到了一个"上下文无关"的偏好关系</li>
+</ol>
+</div>
+
+<p>这之所以强大，是因为：一旦有了上下文无关的偏好关系，<strong>最优排列问题就从组合搜索降维成了排序问题</strong>。</p>
+
+<h3>2.2 API 性质的严格定义</h3>
+
+<div class="callout">
+<strong>定义（API 性质）：</strong>代价函数 <em>f</em> 满足 <span class="key-term">API 性质（Adjacent Pairwise Interchange Property）</span>，如果存在一个传递且完备的二元偏好关系 &lt; 定义在 job 上，使得：<br><br>
+对所有 job i, j，若 i &lt; j（i 比 j 更优先），则对<strong>任意</strong>上下文序列 u, v：<br>
+<strong>f(u, i, j, v) ≤ f(u, j, i, v)</strong>
+</div>
+
+<h4>API 的三个要件</h4>
+
+<table>
+  <tr><th>要件</th><th>含义</th><th>为什么重要</th></tr>
+  <tr>
+    <td><strong>传递性 (transitive)</strong></td>
+    <td>i &lt; j 且 j &lt; k ⇒ i &lt; k</td>
+    <td>保证存在全局一致的全序（不会出现循环偏好 i &lt; j &lt; k &lt; i）</td>
+  </tr>
+  <tr>
+    <td><strong>完备性 (complete)</strong></td>
+    <td>对任意 i, j，要么 i &lt; j，要么 j &lt; i，要么两者都成立</td>
+    <td>任意两个 job 都可比较（不存在"无法判断"的情况）</td>
+  </tr>
+  <tr>
+    <td><strong>上下文无关 (context-free)</strong></td>
+    <td>偏好方向不受 u 和 v 的影响</td>
+    <td><strong>最关键的一点</strong>：i 和 j 的相对优劣是它们本身的属性，与它们在序列中的位置无关</td>
+  </tr>
+</table>
+
+<p>直觉：这类似于实数的大小关系——无论你把 3 和 7 放在数轴上的什么位置，3 总是小于 7。</p>
+
+<h3>2.3 Theorem 1（Smith 定理）—— 证明细节</h3>
+
+<div class="callout red">
+<strong>Theorem 1 (Smith 1956).</strong> 若代价函数 f 满足 API 性质，则<strong>任何按偏好关系 &lt; 排序的排列都是最优的</strong>。即：将 jobs 从"最优先"排到"最不优先"即可得到最优解。
+</div>
+
+<h4>证明（"冒泡排序"式构造）</h4>
+
+<p>Smith 的证明本质上是一次<strong>冒泡排序</strong>——不是冒泡数值，而是冒泡"偏好顺序"：</p>
+
+<figure class="diagram">
+<svg width="640" height="390" viewBox="0 0 640 390">
+  <text x="30" y="22" font-size="13" font-weight="600" fill="#444">Theorem 1 证明 —— "冒泡排序"过程示例：</text>
+  <text x="30" y="42" font-size="11" fill="#888">假设偏好序：A &lt; B &lt; C &lt; D（A 最优先）</text>
+
+  <!-- Initial -->
+  <text x="30" y="72" font-size="12" fill="#888">初始排列 Π′：</text>
+  <rect x="140" y="57" width="40" height="32" rx="5" fill="#fce7f3" stroke="#db2777" stroke-width="1.5"/>
+  <text x="160" y="78" text-anchor="middle" font-size="12" font-weight="600" fill="#9d174d">C</text>
+
+  <rect x="186" y="57" width="40" height="32" rx="5" fill="#fef3c7" stroke="#f59e0b" stroke-width="1.5"/>
+  <text x="206" y="78" text-anchor="middle" font-size="12" font-weight="600" fill="#92400e">A</text>
+  <text x="206" y="102" text-anchor="middle" font-size="9" fill="#ef4444">✗ A&lt;C 但 C 在前</text>
+
+  <rect x="232" y="57" width="40" height="32" rx="5" fill="#dbeafe" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="252" y="78" text-anchor="middle" font-size="12" font-weight="600" fill="#1e40af">D</text>
+
+  <rect x="278" y="57" width="40" height="32" rx="5" fill="#ecfdf5" stroke="#10b981" stroke-width="1.5"/>
+  <text x="298" y="78" text-anchor="middle" font-size="12" font-weight="600" fill="#047857">B</text>
+  <text x="298" y="102" text-anchor="middle" font-size="9" fill="#ef4444">✗ B&lt;D 但 D 在前</text>
+
+  <!-- Pass 1 -->
+  <text x="30" y="142" font-size="12" fill="#888">第 1 趟扫描：</text>
+  <text x="130" y="142" font-size="11" fill="#666">扫描到 (C,A)：A &lt; C，交换！</text>
+  <text x="380" y="142" font-size="11" fill="#666">扫描到 (D,B)：B &lt; D，交换！</text>
+
+  <rect x="140" y="157" width="40" height="32" rx="5" fill="#fef3c7" stroke="#f59e0b" stroke-width="1.5"/>
+  <text x="160" y="178" text-anchor="middle" font-size="12" font-weight="600" fill="#92400e">A</text>
+  <rect x="186" y="157" width="40" height="32" rx="5" fill="#fce7f3" stroke="#db2777" stroke-width="1.5"/>
+  <text x="206" y="178" text-anchor="middle" font-size="12" font-weight="600" fill="#9d174d">C</text>
+  <rect x="232" y="157" width="40" height="32" rx="5" fill="#ecfdf5" stroke="#10b981" stroke-width="1.5"/>
+  <text x="252" y="178" text-anchor="middle" font-size="12" font-weight="600" fill="#047857">B</text>
+  <rect x="278" y="157" width="40" height="32" rx="5" fill="#dbeafe" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="298" y="178" text-anchor="middle" font-size="12" font-weight="600" fill="#1e40af">D</text>
+
+  <!-- Pass 2 -->
+  <text x="30" y="215" font-size="12" fill="#888">第 2 趟扫描：</text>
+  <text x="130" y="215" font-size="11" fill="#666">扫描到 (C,B)：B &lt; C，交换！</text>
+
+  <rect x="140" y="232" width="40" height="32" rx="5" fill="#fef3c7" stroke="#f59e0b" stroke-width="1.5"/>
+  <text x="160" y="253" text-anchor="middle" font-size="12" font-weight="600" fill="#92400e">A</text>
+  <rect x="186" y="232" width="40" height="32" rx="5" fill="#ecfdf5" stroke="#10b981" stroke-width="1.5"/>
+  <text x="206" y="253" text-anchor="middle" font-size="12" font-weight="600" fill="#047857">B</text>
+  <rect x="232" y="232" width="40" height="32" rx="5" fill="#fce7f3" stroke="#db2777" stroke-width="1.5"/>
+  <text x="252" y="253" text-anchor="middle" font-size="12" font-weight="600" fill="#9d174d">C</text>
+  <rect x="278" y="232" width="40" height="32" rx="5" fill="#dbeafe" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="298" y="253" text-anchor="middle" font-size="12" font-weight="600" fill="#1e40af">D</text>
+
+  <!-- Final -->
+  <text x="30" y="295" font-size="12" fill="#888">最终排列 Π：</text>
+  <text x="130" y="295" font-size="11" fill="#10b981">全序一致：A, B, C, D ✓ 最优！</text>
+
+  <rect x="140" y="310" width="40" height="32" rx="5" fill="#fef3c7" stroke="#f59e0b" stroke-width="2"/>
+  <text x="160" y="331" text-anchor="middle" font-size="12" font-weight="600" fill="#92400e">A</text>
+  <rect x="186" y="310" width="40" height="32" rx="5" fill="#ecfdf5" stroke="#10b981" stroke-width="2"/>
+  <text x="206" y="331" text-anchor="middle" font-size="12" font-weight="600" fill="#047857">B</text>
+  <rect x="232" y="310" width="40" height="32" rx="5" fill="#fce7f3" stroke="#db2777" stroke-width="2"/>
+  <text x="252" y="331" text-anchor="middle" font-size="12" font-weight="600" fill="#9d174d">C</text>
+  <rect x="278" y="310" width="40" height="32" rx="5" fill="#dbeafe" stroke="#2563eb" stroke-width="2"/>
+  <text x="298" y="331" text-anchor="middle" font-size="12" font-weight="600" fill="#1e40af">D</text>
+
+  <!-- Key insight box -->
+  <rect x="370" y="290" width="255" height="95" rx="10" fill="#f5f3ff" stroke="#7c3aed" stroke-width="1.5"/>
+  <text x="385" y="312" font-size="12" font-weight="600" fill="#5b21b6">证明的核心论证：</text>
+  <text x="385" y="332" font-size="11" fill="#444">1. 每次交换消除一个"逆序"</text>
+  <text x="385" y="350" font-size="11" fill="#444">2. API 保证每次交换不增加代价</text>
+  <text x="385" y="368" font-size="11" fill="#444">3. 最多 C(n,2) 次交换后到达偏好序</text>
+  <text x="385" y="386" font-size="11" fill="#444">4. 故偏好序的代价 ≤ 任意排列的代价</text>
+</svg>
+<figcaption>图5：Smith 定理的构造性证明。将任意排列 Π′ 通过一系列相邻交换转换为偏好序 Π，API 性质保证每一步代价单调非增。</figcaption>
+</figure>
+
+<h4>证明的正式表述</h4>
+
+<ol>
+  <li>令 Π 为按 &lt; 排序的排列（即 i 出现在 j 之前当且仅当 i &lt; j）。令 Π′ 为任意可行排列。</li>
+  <li>若 Π′ ≠ Π，则 Π′ 中必存在相邻对 (j, i) 使得 i &lt; j 但 j 在 i 之前（否则 Π′ 就是偏好序本身）。</li>
+  <li>交换 j 和 i → 得到新排列 Π″。由 API 性质：f(Π″) ≤ f(Π′)。</li>
+  <li>Π″ 与 Π 相比少了一个"不一致位置"。重复此过程。</li>
+  <li>最多经过 C(n,2) = O(n²) 次交换后，排列完全变为 Π，且每次交换代价单调非增。</li>
+  <li>因此 f(Π) ≤ f(Π′)。由于 Π′ 是任意的，Π 是最优的。∎</li>
+</ol>
+
+<h4>复杂度</h4>
+
+<p>定理本身只保证<strong>存在性</strong>——按偏好序排列是最优的。实际构造最优排列只需要<strong>排序</strong>，复杂度为 <strong>O(n log n)</strong>（使用堆排序或类似结构，每次比较"i &lt; j ?"）。</p>
+
+<p>注意：Smith 论文中提到的 O(n log n) 是指<strong>找到最优排列</strong>的复杂度，不是<strong>验证 API 性质</strong>的复杂度——验证 API 性质通常可以通过代数推导完成（如展开代价差公式），不需要枚举。</p>
+
+<h3>2.4 示例：故障检测问题 (ΣQᵢcᵢ)</h3>
+
+<p>这是 Monma &amp; Sidney 论文贯穿始终的动机示例，也是 API 性质的经典示范：</p>
+
+<blockquote>
+<p>一个系统由 n 个组件组成，需要依次检测直到某个组件失败或全部通过。组件 j 的检测代价为 cⱼ，通过概率为 qⱼ (0 ≤ qⱼ ≤ 1)。测试独立。目标：<strong>最小化期望总检测代价</strong>。</p>
+</blockquote>
+
+<h4>代价函数的递归定义</h4>
+<pre><code>f(j) = cⱼ                                              // 单个 job
+f(s, t) = f(s) + q(s) · f(t)                           // 拼接两个子序列
+q(s) = Π_{k=1}^{len(s)} q_{s(k)}                       // 子序列的"通过概率"</code></pre>
+
+<h4>验证 API 性质</h4>
+
+<p>取相邻 job i, j 在上下文 (u, v) 中，计算交换代价差：</p>
+<pre><code>Δ = f(u, i, j, v) − f(u, j, i, v)
+   = [f(u) + q(u)·f(i) + q(u)qᵢ·f(j) + q(u)qᵢqⱼ·f(v)]
+   − [f(u) + q(u)·f(j) + q(u)qⱼ·f(i) + q(u)qⱼqᵢ·f(v)]
+   = q(u) · [cᵢ + qᵢ·cⱼ − cⱼ − qⱼ·cᵢ]
+   = q(u) · [cᵢ·(1−qⱼ) − cⱼ·(1−qᵢ)]
+   = q(u)·(1−qᵢ)·(1−qⱼ) · [cᵢ/(1−qᵢ) − cⱼ/(1−qⱼ)]</code></pre>
+
+<p>由于 q(u) ≥ 0, (1−qᵢ) ≥ 0, (1−qⱼ) ≥ 0：</p>
+
+<div class="callout">
+<strong>Δ ≤ 0（即 i 在 j 前不更差）当且仅当 cᵢ/(1−qᵢ) ≤ cⱼ/(1−qⱼ)</strong>。<br>
+因此定义偏好关系：<strong>i &lt; j ⇔ cᵢ/(1−qᵢ) &lt; cⱼ/(1−qⱼ)</strong>。
+</div>
+
+<p>偏好关系的直觉：<strong>代价小且易失败（1−q 大 → c/(1−q) 小）的组件先测</strong>。按 c/(1−q) 升序排列即为最优。这就是 Smith 定理的直接应用。</p>
+
+<h3>2.5 为什么 API 如此强大 —— 和为什么它有局限</h3>
+
+<table>
+  <tr><th>API 的威力</th><th>API 的局限</th></tr>
+  <tr>
+    <td>从 <strong>O(n!) 穷举搜索</strong> 变为 <strong>O(n log n) 排序</strong></td>
+    <td><strong>只适用于无优先约束</strong>的问题。一旦引入 i→j 约束，可能不能简单按偏好序排列</td>
+  </tr>
+  <tr>
+    <td>偏好关系是<strong>局部的</strong>：只需比较两个 job 本身，无需知晓全局</td>
+    <td>偏好关系可能和优先约束<strong>冲突</strong>——这是下一节要解决的核心问题</td>
+  </tr>
+  <tr>
+    <td>偏好关系是<strong>上下文无关的</strong>：i 和 j 的相对顺序与周围其他 job 无关</td>
+    <td>当出现约束冲突时，"上下文无关"不再足够——需要升级到<strong>序列层面</strong></td>
+  </tr>
+  <tr>
+    <td>与代价函数的具体形式解耦：任何满足 API 的问题都可以用同一算法</td>
+    <td>并非所有代价函数都满足 API——例如带 setup time 的排序通常不满足</td>
+  </tr>
+</table>
+
+<h3>2.6 从 API 到 ASI：思想的延续</h3>
+
+<p>Smith (1956) 解决了<strong>无约束</strong>排序问题。Monma &amp; Sidney (1979) 面临的是<strong>带串联-并联优先约束</strong>的排序问题。核心困难在于：</p>
+
+<blockquote>
+<p><strong>偏好关系"i &lt; j"可能和优先约束"i → j"（i 必须在 j 前）冲突。</strong></p>
+</blockquote>
+
+<p>例如：约束说 A 必须在 B 之后（B → A），但偏好说 A &lt; B（A 应该先做）。不能简单地把 B 放在 A 前面——那就违反了约束。</p>
+
+<p>Monma &amp; Sidney 的洞察是：<strong>把 API 从"job 层面"升级到"子序列（string）层面"</strong>——这就是 §3 要讲的 <strong>ASI 性质</strong>。其核心是 Theorem 2：当约束与偏好冲突时，冲突的 job 会"粘在一起"成为一个不可分割的 string，而 string 可以像单个 job 一样参与偏好排序。</p>
+
+<figure class="diagram">
+<svg width="660" height="175" viewBox="0 0 660 175">
+  <text x="30" y="22" font-size="13" font-weight="600" fill="#444">从 API 到 ASI 的概念升级：</text>
+
+  <!-- API -->
+  <rect x="30" y="45" width="180" height="55" rx="10" fill="#fef3c7" stroke="#f59e0b" stroke-width="2"/>
+  <text x="120" y="68" text-anchor="middle" font-size="13" font-weight="600" fill="#92400e">API (Smith 1956)</text>
+  <text x="120" y="87" text-anchor="middle" font-size="11" fill="#888">比较对象：单个 job</text>
+
+  <!-- Arrow -->
+  <text x="235" y="78" text-anchor="middle" font-size="22" fill="#7c3aed">⟹</text>
+
+  <!-- ASI -->
+  <rect x="270" y="45" width="200" height="55" rx="10" fill="#ddd6fe" stroke="#7c3aed" stroke-width="2"/>
+  <text x="370" y="68" text-anchor="middle" font-size="13" font-weight="600" fill="#5b21b6">ASI (Monma &amp; Sidney 1979)</text>
+  <text x="370" y="87" text-anchor="middle" font-size="11" fill="#888">比较对象：子序列 (string)</text>
+
+  <!-- Arrow -->
+  <text x="490" y="78" text-anchor="middle" font-size="22" fill="#10b981">⟹</text>
+
+  <!-- IKKBZ -->
+  <rect x="520" y="45" width="120" height="55" rx="10" fill="#ecfdf5" stroke="#10b981" stroke-width="2"/>
+  <text x="580" y="62" text-anchor="middle" font-size="13" font-weight="600" fill="#047857">IKKBZ 1986</text>
+  <text x="580" y="80" text-anchor="middle" font-size="10" fill="#666">rank(S) 就是</text>
+  <text x="580" y="94" text-anchor="middle" font-size="10" fill="#666">ASI 偏好关系</text>
+
+  <!-- Bottom explanation -->
+  <text x="330" y="140" text-anchor="middle" font-size="12" fill="#888">
+    升级的关键：当约束要求 i→j 但偏好 j&lt;i 时，将 (i,j) 合并为 string，
+  </text>
+  <text x="330" y="158" text-anchor="middle" font-size="12" fill="#888">
+    string 像 job 一样有偏好关系 → ASI = "string 版的 API"
+  </text>
+  <text x="330" y="173" text-anchor="middle" font-size="11" fill="#aaa">
+    （这就是 IKKBZ 中"归一化"步骤的理论根源）
+  </text>
+</svg>
+<figcaption>图6：从 API → ASI → IKKBZ rank 函数的思想谱系。</figcaption>
+</figure>
+
+<hr>
+
+<!-- ================================================================== -->
+<h2 id="s3">3. 并联链约束与 ASI 性质 (§3)</h2>
+
+<p><span class="tag">核心贡献</span> <span class="tag">ASI 性质</span> <span class="tag">IKKBZ 的根基</span></p>
+
+<h3>3.1 从 Job 到 Sequence：ASI 性质</h3>
+
+<p>当存在优先约束时，我们处理的不是单个 job，而是<strong>子序列（subsequence）</strong>。API 性质需要从 job 层面升级到 sequence 层面：</p>
+
+<div class="callout">
+<strong>定义：</strong>代价函数 <em>f</em> 满足 <span class="key-term">ASI 性质（Adjacent Sequence Interchange）</span>，如果存在一个传递且完备的偏好关系 &lt; 定义在<strong>序列</strong>上，使得：<br>
+对所有序列 s, t，若 s &lt; t，则对任意序列 u, v：<br>
+<strong>f(u, s, t, v) ≤ f(u, t, s, v)</strong>
+</div>
+
+<p>ASI 是 API 的自然推广：将"job"替换为"子序列"。<strong>IKKBZ 的 Lemma 1 所指的正是这个性质</strong>，而 IKKBZ 中的 rank 函数正是 ASI 偏好关系的具体实现：<code>rank(S) = (T(S)−1)/C(S)</code>。</p>
+
+<figure class="diagram">
+<svg width="620" height="160" viewBox="0 0 620 160">
+  <text x="30" y="28" font-size="13" font-weight="600" fill="#444">ASI 性质示意 —— 序列层面的相邻交换：</text>
+
+  <!-- Sequence 1 -->
+  <rect x="30" y="45" width="55" height="36" rx="6" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.5"/>
+  <text x="57" y="68" text-anchor="middle" font-size="13" fill="#5b21b6">u</text>
+
+  <rect x="95" y="45" width="70" height="36" rx="6" fill="#fef3c7" stroke="#f59e0b" stroke-width="2"/>
+  <text x="130" y="68" text-anchor="middle" font-size="13" font-weight="600" fill="#92400e">s (子序列)</text>
+
+  <rect x="175" y="45" width="70" height="36" rx="6" fill="#dbeafe" stroke="#2563eb" stroke-width="2"/>
+  <text x="210" y="68" text-anchor="middle" font-size="13" font-weight="600" fill="#1e40af">t (子序列)</text>
+
+  <rect x="255" y="45" width="55" height="36" rx="6" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.5"/>
+  <text x="282" y="68" text-anchor="middle" font-size="13" fill="#5b21b6">v</text>
+
+  <text x="340" y="68" text-anchor="middle" font-size="18" fill="#555">→ 交换 →</text>
+
+  <rect x="420" y="45" width="55" height="36" rx="6" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.5"/>
+  <text x="447" y="68" text-anchor="middle" font-size="13" fill="#5b21b6">u</text>
+
+  <rect x="485" y="45" width="70" height="36" rx="6" fill="#dbeafe" stroke="#2563eb" stroke-width="2"/>
+  <text x="520" y="68" text-anchor="middle" font-size="13" font-weight="600" fill="#1e40af">t</text>
+
+  <rect x="565" y="45" width="50" height="36" rx="6" fill="#fef3c7" stroke="#f59e0b" stroke-width="2"/>
+  <text x="590" y="68" text-anchor="middle" font-size="12" font-weight="600" fill="#92400e">s</text>
+
+  <!-- Note -->
+  <text x="320" y="140" text-anchor="middle" font-size="12" fill="#888">若 s &lt; t 则 cost(…s,t…) ≤ cost(…t,s…)，无论 u, v 是什么</text>
+</svg>
+<figcaption>图5：ASI 性质。s 和 t 是子序列（string），而非单个 job。只要 s 比 t 更优先，s 就应排在 t 前面——无论周围的上下文如何。</figcaption>
+</figure>
+
+<h3>3.2 Theorem 2：解决偏好与约束的冲突</h3>
+
+<p>在带优先约束的排序中，<strong>偏好关系可能和优先约束冲突</strong>：约束说 i→j，但偏好说 j &lt; i。怎么办？</p>
+
+<div class="callout red">
+<strong>Theorem 2.</strong> 设 f 满足 ASI 性质。考虑优先图中的 job module {i, j}，其中 i → j 但 j &lt; i（约束与偏好冲突）。则存在一个最优排列，其中 <strong>i 紧邻 j 之前</strong>（即 i 和 j 是连续的）。
+</div>
+
+<p><strong>直觉：</strong> 如果约束要求 i 在 j 之前，但偏好认为 j 更优先，那么"粘在一起"（i 紧邻 j 之前）是最优折衷——i 不能晚于 j（约束），但也不应离 j 太远（因为 j 更优先，我们希望 j 尽早出现）。</p>
+
+<figure class="diagram">
+<svg width="560" height="210" viewBox="0 0 560 210">
+  <defs>
+    <marker id="ar4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#7c3aed"/>
+    </marker>
+  </defs>
+
+  <text x="30" y="20" font-size="13" font-weight="600" fill="#444">Theorem 2 示意：</text>
+
+  <!-- Constraint: i → j -->
+  <circle cx="120" cy="55" r="22" fill="#fef3c7" stroke="#f59e0b" stroke-width="2"/>
+  <text x="120" y="60" text-anchor="middle" font-size="15" font-weight="600" fill="#92400e">i</text>
+  <circle cx="220" cy="55" r="22" fill="#dbeafe" stroke="#2563eb" stroke-width="2"/>
+  <text x="220" y="60" text-anchor="middle" font-size="15" font-weight="600" fill="#1e40af">j</text>
+  <line x1="142" y1="55" x2="196" y2="55" stroke="#7c3aed" stroke-width="2" marker-end="url(#ar4)"/>
+  <text x="170" y="45" text-anchor="middle" font-size="11" fill="#7c3aed">i → j</text>
+  <text x="170" y="95" text-anchor="middle" font-size="12" fill="#ef4444">但 j &lt; i (偏好冲突!)</text>
+
+  <!-- Result: merge -->
+  <text x="300" y="55" text-anchor="middle" font-size="18" fill="#555">⇒</text>
+
+  <rect x="340" y="35" width="100" height="42" rx="10" fill="#ddd6fe" stroke="#7c3aed" stroke-width="2"/>
+  <text x="390" y="54" text-anchor="middle" font-size="12" font-weight="600" fill="#5b21b6">i → j</text>
+  <text x="390" y="68" text-anchor="middle" font-size="10" fill="#888">(绑定为 string)</text>
+
+  <!-- Sequence structure -->
+  <text x="280" y="155" font-size="12" fill="#444">最优排列形式：</text>
+  <rect x="140" y="165" width="80" height="32" rx="6" fill="#f3f1eb" stroke="#ccc" stroke-width="1"/>
+  <text x="180" y="186" text-anchor="middle" font-size="12" fill="#666">… other …</text>
+  <rect x="235" y="165" width="90" height="32" rx="8" fill="#ddd6fe" stroke="#7c3aed" stroke-width="2"/>
+  <text x="280" y="186" text-anchor="middle" font-size="13" font-weight="600" fill="#5b21b6">(i, j)</text>
+  <rect x="340" y="165" width="80" height="32" rx="6" fill="#f3f1eb" stroke="#ccc" stroke-width="1"/>
+  <text x="380" y="186" text-anchor="middle" font-size="12" fill="#666">… other …</text>
+</svg>
+<figcaption>图6：当约束 i→j 与偏好 j&lt;i 冲突时，将它们合并为一个 string (i,j)，其中 i 紧邻 j 之前。</figcaption>
+</figure>
+
+<h3>3.3 并联链算法（Parallel-Chains Algorithm）</h3>
+
+<p><span class="tag">核心算法</span></p>
+
+<p>一个<strong>并联链</strong>优先图是：一条链，或多条链的并联组合。这是串联-并联图的最简形式。</p>
+
+<div class="callout info">
+<strong>Parallel-Chains Algorithm（并联链算法）：</strong>
+<pre><code>步骤 1: 检查所有 string 对：若约束 i→j 且偏好 j&lt;i（冲突），
+         则将 (i,j) 合并为一个新 string。重复直到没有冲突。
+步骤 2: 将所有 string 按偏好关系排序。</code></pre>
+</div>
+
+<figure class="diagram">
+<svg width="640" height="380" viewBox="0 0 640 380">
+  <defs>
+    <marker id="apc" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#7c3aed"/>
+    </marker>
+  </defs>
+
+  <text x="30" y="22" font-size="13" font-weight="600" fill="#444">并联链算法示例：</text>
+
+  <!-- Initial: 3 parallel chains -->
+  <text x="140" y="50" text-anchor="middle" font-size="12" fill="#888">初始：三条并联链</text>
+
+  <!-- Chain 1 -->
+  <rect x="30" y="65" width="70" height="28" rx="6" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.5"/>
+  <text x="65" y="84" text-anchor="middle" font-size="12" fill="#5b21b6">a → b</text>
+
+  <!-- Chain 2 -->
+  <rect x="120" y="65" width="70" height="28" rx="6" fill="#fce7f3" stroke="#db2777" stroke-width="1.5"/>
+  <text x="155" y="84" text-anchor="middle" font-size="12" fill="#9d174d">c → d</text>
+
+  <!-- Chain 3 -->
+  <rect x="210" y="65" width="70" height="28" rx="6" fill="#ecfdf5" stroke="#10b981" stroke-width="1.5"/>
+  <text x="245" y="84" text-anchor="middle" font-size="12" fill="#047857">e</text>
+
+  <!-- Step 1: check conflicts -->
+  <text x="30" y="120" font-size="12" fill="#888">假设偏好：b &lt; c (b 比 c 更优先)</text>
+  <text x="30" y="140" font-size="12" fill="#888">约束：在各自链内 a→b, c→d (链内顺序不可变)</text>
+
+  <!-- Step 1a: no conflict within chain -->
+  <text x="160" y="170" text-anchor="middle" font-size="12" fill="#444">链间无约束 → 可以直接按偏好合并链</text>
+
+  <!-- Step 2: sort -->
+  <text x="160" y="200" text-anchor="middle" font-size="12" font-weight="600" fill="#5b21b6">步骤 2：按偏好排序所有链头</text>
+
+  <text x="30" y="225" font-size="12" fill="#888">偏好序（假设）：a &lt; c &lt; e &lt; b &lt; d</text>
+
+  <!-- Result after step 1: convert chain a→b to (a,b) if b<a -->
+  <text x="30" y="260" font-size="12" fill="#888">检查链内冲突：a→b 且假设 a &lt; b → 无冲突 ✓</text>
+  <text x="30" y="280" font-size="12" fill="#888">若 b &lt; a 且 a→b → 有冲突！→ 合并为 (a,b)</text>
+
+  <!-- Final sorted -->
+  <text x="160" y="320" text-anchor="middle" font-size="13" font-weight="600" fill="#5b21b6">最终归并结果（步骤 2）：按偏好序交错</text>
+
+  <rect x="40" y="335" width="50" height="30" rx="6" fill="#ede9fe" stroke="#7c3aed" stroke-width="1"/>
+  <text x="65" y="355" text-anchor="middle" font-size="12" fill="#5b21b6">a</text>
+
+  <rect x="100" y="335" width="50" height="30" rx="6" fill="#fce7f3" stroke="#db2777" stroke-width="1"/>
+  <text x="125" y="355" text-anchor="middle" font-size="12" fill="#9d174d">c</text>
+
+  <rect x="160" y="335" width="50" height="30" rx="6" fill="#ecfdf5" stroke="#10b981" stroke-width="1"/>
+  <text x="185" y="355" text-anchor="middle" font-size="12" fill="#047857">e</text>
+
+  <rect x="220" y="335" width="50" height="30" rx="6" fill="#ede9fe" stroke="#7c3aed" stroke-width="1"/>
+  <text x="245" y="355" text-anchor="middle" font-size="12" fill="#5b21b6">b</text>
+
+  <rect x="280" y="335" width="50" height="30" rx="6" fill="#fce7f3" stroke="#db2777" stroke-width="1"/>
+  <text x="305" y="355" text-anchor="middle" font-size="12" fill="#9d174d">d</text>
+</svg>
+<figcaption>图7：并联链算法示意。链内顺序由约束固定，链间按偏好交错归并。如果有冲突（链内约束与偏好不一致），先合并。</figcaption>
+</figure>
+
+<h3>3.4 可结合性（Associativity, Theorem 3）</h3>
+
+<div class="callout">
+<strong>Theorem 3.</strong> 并联链算法是<strong>可结合的（associative）</strong>：若 G₁ 和 G₂ 是两个并联链图，算法分别产生它们的最优排列 Π₁ 和 Π₂，则 Π₁ 和 Π₂ 可以<strong>直接按偏好归并</strong>得到 G₁ ∥ G₂ 的最优排列。
+</div>
+
+<p>这意味着：<strong>并联子问题可以独立求解，然后合并</strong>。这是分治策略正确性的理论基础。</p>
+
+<hr>
+
+<!-- ================================================================== -->
+<h2 id="s4">4. 串联-并联优先约束与 SND 性质 (§4)</h2>
+
+<p><span class="tag">完整框架</span> <span class="tag">SND 性质</span></p>
+
+<h3>4.1 SND 性质（Series-Network Decomposition）</h3>
+
+<div class="callout">
+<strong>定义：</strong>代价函数 <em>f</em> 满足 <span class="key-term">SND 性质（Series-Network Decomposition）</span>，如果：<br>
+对同一 job 集上的任意两个排列 s 和 t，若 f(s) ≤ f(t)，则对任意 u, v：<br>
+<strong>f(u, s, v) ≤ f(u, t, v)</strong>
+</div>
+
+<p>直觉：<strong>如果 s 本身比 t 好，那么在任何上下文中 s 都比 t 好</strong>。串联组件可以独立优化，结果直接拼接。</p>
+
+<figure class="diagram">
+<svg width="580" height="200" viewBox="0 0 580 200">
+  <defs>
+    <marker id="asnd" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#7c3aed"/>
+    </marker>
+  </defs>
+
+  <!-- SND explanation -->
+  <text x="30" y="25" font-size="13" font-weight="600" fill="#444">SND 性质 —— 串联分解：</text>
+
+  <!-- Series graph -->
+  <rect x="80" y="55" width="80" height="50" rx="10" fill="#ede9fe" stroke="#7c3aed" stroke-width="2"/>
+  <text x="120" y="78" text-anchor="middle" font-size="13" font-weight="600" fill="#5b21b6">G₁</text>
+  <text x="120" y="95" text-anchor="middle" font-size="10" fill="#888">最优: Π₁</text>
+
+  <rect x="210" y="55" width="80" height="50" rx="10" fill="#ede9fe" stroke="#7c3aed" stroke-width="2"/>
+  <text x="250" y="78" text-anchor="middle" font-size="13" font-weight="600" fill="#5b21b6">G₂</text>
+  <text x="250" y="95" text-anchor="middle" font-size="10" fill="#888">最优: Π₂</text>
+
+  <line x1="160" y1="80" x2="208" y2="80" stroke="#7c3aed" stroke-width="2" marker-end="url(#asnd)"/>
+
+  <text x="320" y="85" text-anchor="middle" font-size="18" fill="#555">⇒</text>
+
+  <rect x="360" y="55" width="180" height="50" rx="10" fill="#ddd6fe" stroke="#7c3aed" stroke-width="2"/>
+  <text x="450" y="74" text-anchor="middle" font-size="13" font-weight="600" fill="#5b21b6">最优排列 = Π₁ ∘ Π₂</text>
+  <text x="450" y="92" text-anchor="middle" font-size="11" fill="#666">(直接拼接即可)</text>
+
+  <!-- SND symbolic -->
+  <text x="290" y="160" text-anchor="middle" font-size="12" fill="#888">
+    若 f(Π₁) ≤ f(Π₁′) 则 f(…,Π₁,…) ≤ f(…,Π₁′,…)
+  </text>
+  <text x="290" y="180" text-anchor="middle" font-size="12" fill="#888">
+    串联组件的内部优化与外部上下文无关
+  </text>
+</svg>
+<figcaption>图8：SND 性质。串联图中各组件可独立优化，然后将最优排列直接首尾拼接。</figcaption>
+</figure>
+
+<h3>4.2 Theorem 5：复合 Job 可被替换</h3>
+
+<div class="callout red">
+<strong>Theorem 5.</strong> 若 f 满足 SND 性质，任意优先图中的复合 job T 可以被其<strong>任意最优排列 t</strong> 替换（视为一个 string），而不会丢失全局最优解。
+</div>
+
+<h3>4.3 Theorem 6：串联-并联算法的核心</h3>
+
+<div class="callout red">
+<strong>Theorem 6.</strong> 若 f 同时满足 SND 性质，且给定一个<strong>可结合的</strong>并联链算法，则任意优先图中的<strong>并联链 job module T</strong> 可以被该算法为 T 生成的最优排列替换，而不会丢失全局最优解。
+</div>
+
+<p>这是整个理论体系的核心定理：</p>
+<ul>
+  <li>串联组件 → SND 性质 → 独立求解后拼接</li>
+  <li>并联链模块 → 并联链算法 → 可结合 → 独立求解后归并</li>
+  <li>递归应用 → 任意串联-并联图 → 完全求解</li>
+</ul>
+
+<h3>4.4 串联-并联算法（Series-Parallel Algorithm）</h3>
+
+<div class="callout info">
+<strong>Series-Parallel Algorithm：</strong>
+<pre><code>对串联-并联优先图 G 的分解树（S/P 二叉树）进行后序遍历：
+
+- 遇到<strong>叶子</strong>：返回单个 job 作为 string。
+- 遇到<strong>P 节点</strong>（并联）：对其子 string 运行"并联链算法"：
+    步骤 1：检查所有 string 对，若有约束冲突则合并。
+    步骤 2：按偏好关系归并所有 string。
+- 遇到<strong>S 节点</strong>（串联）：直接拼接子模块的最优排列。
+
+最终根节点产生的一条 chain 就是整个问题的最优排列。</code></pre>
+</div>
+
+<figure class="diagram">
+<svg width="640" height="460" viewBox="0 0 640 460">
+  <defs>
+    <marker id="asa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#7c3aed"/>
+    </marker>
+  </defs>
+
+  <text x="320" y="22" text-anchor="middle" font-size="15" font-weight="600" fill="#333">串联-并联算法完整流程</text>
+
+  <!-- Decomposition tree -->
+  <text x="200" y="50" text-anchor="middle" font-size="12" fill="#888">分解树（后序遍历）</text>
+
+  <!-- S root -->
+  <rect x="175" y="65" width="50" height="26" rx="6" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.5"/>
+  <text x="200" y="83" text-anchor="middle" font-size="12" font-weight="600" fill="#5b21b6">S</text>
+
+  <!-- P left -->
+  <rect x="125" y="125" width="50" height="26" rx="6" fill="#fce7f3" stroke="#db2777" stroke-width="1.5"/>
+  <text x="150" y="143" text-anchor="middle" font-size="12" font-weight="600" fill="#9d174d">P</text>
+  <line x1="190" y1="91" x2="160" y2="123" stroke="#555" stroke-width="1.5"/>
+
+  <!-- S right -->
+  <rect x="225" y="125" width="50" height="26" rx="6" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.5"/>
+  <text x="250" y="143" text-anchor="middle" font-size="12" font-weight="600" fill="#5b21b6">S</text>
+  <line x1="210" y1="91" x2="240" y2="123" stroke="#555" stroke-width="1.5"/>
+
+  <!-- Leaves under P -->
+  <circle cx="125" cy="195" r="14" fill="#fff" stroke="#db2777" stroke-width="1.5"/>
+  <text x="125" y="200" text-anchor="middle" font-size="11" fill="#9d174d">2</text>
+  <line x1="140" y1="151" x2="128" y2="181" stroke="#555" stroke-width="1"/>
+
+  <circle cx="175" cy="195" r="14" fill="#fff" stroke="#db2777" stroke-width="1.5"/>
+  <text x="175" y="200" text-anchor="middle" font-size="11" fill="#9d174d">3</text>
+  <line x1="155" y1="151" x2="172" y2="181" stroke="#555" stroke-width="1"/>
+
+  <!-- Leaves under right S -->
+  <circle cx="235" cy="195" r="14" fill="#fff" stroke="#7c3aed" stroke-width="1.5"/>
+  <text x="235" y="200" text-anchor="middle" font-size="11" fill="#5b21b6">4</text>
+  <line x1="242" y1="151" x2="237" y2="181" stroke="#555" stroke-width="1"/>
+
+  <circle cx="275" cy="195" r="14" fill="#fff" stroke="#7c3aed" stroke-width="1.5"/>
+  <text x="275" y="200" text-anchor="middle" font-size="11" fill="#5b21b6">1</text>
+  <line x1="255" y1="151" x2="272" y2="181" stroke="#555" stroke-width="1"/>
+
+  <!-- ===== Right column: execution steps ===== -->
+  <text x="470" y="50" text-anchor="middle" font-size="12" fill="#888">执行步骤</text>
+
+  <!-- Step 1 -->
+  <rect x="370" y="65" width="250" height="65" rx="8" fill="#f5f3ff" stroke="#ddd" stroke-width="1"/>
+  <text x="380" y="85" font-size="11" font-weight="600" fill="#7c3aed">① 后序: 处理 P(2,3)</text>
+  <text x="380" y="102" font-size="11" fill="#444">并联节点 → 运行"并联链算法"</text>
+  <text x="380" y="119" font-size="11" fill="#444">按偏好归并 2,3 → 得 string [2,3]</text>
+
+  <!-- Step 2 -->
+  <rect x="370" y="145" width="250" height="65" rx="8" fill="#f5f3ff" stroke="#ddd" stroke-width="1"/>
+  <text x="380" y="165" font-size="11" font-weight="600" fill="#7c3aed">② 后序: 处理 S(4,1)</text>
+  <text x="380" y="182" font-size="11" fill="#444">串联节点 → SND 性质</text>
+  <text x="380" y="199" font-size="11" fill="#444">直接拼接 → 得 string [4,1]</text>
+
+  <!-- Step 3 -->
+  <rect x="370" y="225" width="250" height="85" rx="8" fill="#fef3c7" stroke="#f59e0b" stroke-width="2"/>
+  <text x="380" y="245" font-size="11" font-weight="600" fill="#b45309">③ 后序: 处理 S( [2,3], [4,1] )</text>
+  <text x="380" y="262" font-size="11" fill="#444">串联根节点 → SND 性质</text>
+  <text x="380" y="279" font-size="11" fill="#444">拼接 [2,3] ∘ [4,1]</text>
+  <text x="380" y="296" font-size="11" fill="#444">= [2,3,4,1] ✓ 全局最优!</text>
+
+  <!-- Complexity -->
+  <text x="400" y="340" font-size="12" font-weight="600" fill="#5b21b6">总复杂度：O(n log n)</text>
+  <text x="400" y="360" font-size="11" fill="#888">（每次"归并"使用堆排序）</text>
+
+  <!-- Note about SND not needed -->
+  <rect x="370" y="380" width="250" height="60" rx="8" fill="#fef2f2" stroke="#ef4444" stroke-width="1" stroke-dasharray="4,2"/>
+  <text x="380" y="398" font-size="10" font-weight="600" fill="#ef4444">⚠ 论文附录注记：</text>
+  <text x="380" y="415" font-size="10" fill="#666">E. L. Lawler 后来指出：仅需 ASI 性质即可，</text>
+  <text x="380" y="430" font-size="10" fill="#666">SND 性质并非必要！</text>
+</svg>
+<figcaption>图9：串联-并联算法的完整执行过程。后序遍历分解树，P 节点运行并联链算法，S 节点直接拼接。最终得到全局最优排列。</figcaption>
+</figure>
+
+<h3>4.5 什么不是串联-并联图？</h3>
+
+<p>理解边界有助于建立直觉。以下是一个<strong>不是</strong>串联-并联图的经典反例（"N 形"图）：</p>
+
+<figure class="diagram">
+<svg width="450" height="180" viewBox="0 0 450 180">
+  <defs>
+    <marker id="aN" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#ef4444"/>
+    </marker>
+  </defs>
+  <text x="140" y="22" text-anchor="middle" font-size="14" font-weight="600" fill="#ef4444">⚠ 非 SP 图（"N 形"）</text>
+
+  <circle cx="80" cy="70" r="20" fill="#fee2e2" stroke="#ef4444" stroke-width="2"/>
+  <text x="80" y="75" text-anchor="middle" font-size="14" font-weight="600" fill="#991b1b">1</text>
+
+  <circle cx="200" cy="70" r="20" fill="#fee2e2" stroke="#ef4444" stroke-width="2"/>
+  <text x="200" y="75" text-anchor="middle" font-size="14" font-weight="600" fill="#991b1b">2</text>
+
+  <circle cx="80" cy="145" r="20" fill="#fee2e2" stroke="#ef4444" stroke-width="2"/>
+  <text x="80" y="150" text-anchor="middle" font-size="14" font-weight="600" fill="#991b1b">3</text>
+
+  <circle cx="200" cy="145" r="20" fill="#fee2e2" stroke="#ef4444" stroke-width="2"/>
+  <text x="200" y="150" text-anchor="middle" font-size="14" font-weight="600" fill="#991b1b">4</text>
+
+  <line x1="100" y1="70" x2="178" y2="70" stroke="#ef4444" stroke-width="2" marker-end="url(#aN)"/>
+  <line x1="100" y1="80" x2="178" y2="135" stroke="#ef4444" stroke-width="2" marker-end="url(#aN)"/>
+  <text x="260" y="110" font-size="12" fill="#ef4444">1→2 且 1→4</text>
+  <text x="260" y="130" font-size="12" fill="#ef4444">3→4</text>
+
+  <text x="260" y="160" font-size="11" fill="#888">这个图无法被归约为链！</text>
+  <text x="260" y="175" font-size="10" fill="#aaa">(包含"N"形子结构)</text>
+</svg>
+<figcaption>图10：非串联-并联图的例子。节点 2 和 3 之间既无串联也无并联关系，无法通过并联链替换归约。</figcaption>
+</figure>
+
+<hr>
+
+<!-- ================================================================== -->
+<h2 id="s5">5. 示例问题 (§5)</h2>
+
+<p>论文给出了<strong>四个</strong>同时满足 ASI 和 SND 性质的经典问题：</p>
+
+<table>
+  <tr><th>问题</th><th>记号</th><th>含义</th><th>偏好关系 (i &lt; j 当且仅当…)</th></tr>
+  <tr>
+    <td><strong>单机总加权完成时间</strong></td>
+    <td>ΣwᵢCᵢ</td>
+    <td>n 个 job 在一台机器上加工，最小化加权完成时间之和</td>
+    <td>pᵢ/wᵢ &lt; pⱼ/wⱼ（WSPT 规则：处理时间/权重比小的优先）</td>
+  </tr>
+  <tr>
+    <td><strong>最大累积超额代价</strong></td>
+    <td>CE<sub>max</sub></td>
+    <td>库存系统中事务过账，最小化超过目标的最大累积量</td>
+    <td>依 c(s) 符号分区，按三种情形分别处理</td>
+  </tr>
+  <tr>
+    <td><strong>最大期望故障检测代价</strong></td>
+    <td>Q<sub>max</sub></td>
+    <td>类似 ΣQᵢcᵢ 但改用 max 而非求和</td>
+    <td>按 f(s) ≤ 0 或 &gt; 0 分区，各自有对应规则</td>
+  </tr>
+  <tr>
+    <td><strong>总加权指数完成时间</strong></td>
+    <td>Σwᵢexp(−rCᵢ)</td>
+    <td>代价按指数累积（r &gt; 0），实为 ΣQᵢcᵢ 的特例</td>
+    <td>等同于 ΣQᵢcᵢ 的偏好关系</td>
+  </tr>
+</table>
+
+<div class="callout">
+<strong>注意：</strong>上表中的 ΣwᵢCᵢ 问题和 ΣQᵢcᵢ (故障检测) 问题同时也是 Johnson 两机 flow-shop 和 Lawler 系列工作的特殊情形。这些问题的共同点是：<strong>代价函数可以递归定义</strong>，且递归结构保证了 ASI 和 SND 性质。
+</div>
+
+<h3>已知复杂度一览</h3>
+
+<table>
+  <tr><th>问题</th><th>无约束</th><th>链 / 树</th><th>串联-并联</th><th>一般优先约束</th></tr>
+  <tr><td>ΣQᵢcᵢ</td><td>O(n log n) [20]</td><td>O(n log n) [7][26]</td><td><strong>O(n log n)</strong> [本文]</td><td>开放问题</td></tr>
+  <tr><td>ΣwᵢCᵢ</td><td>O(n log n) [31]</td><td>O(n log n) [9]</td><td><strong>O(n log n)</strong> [本文]</td><td><strong>NP-Hard</strong> [16][9]</td></tr>
+  <tr><td>CE<sub>max</sub></td><td>O(n log n)</td><td>O(n log n) [2][3]</td><td><strong>O(n log n)</strong> [本文]</td><td><strong>NP-Hard</strong> [1]</td></tr>
+  <tr><td>Q<sub>max</sub></td><td>O(n log n)</td><td>O(n log n) [21][30]</td><td><strong>O(n log n)</strong> [本文]</td><td>开放问题</td></tr>
+</table>
+
+<p>关键观察：<strong>一旦优先约束超出串联-并联范畴（变成一般约束），问题立即变成 NP-Hard（对 ΣwᵢCᵢ 和 CE<sub>max</sub> 而言）</strong>。这解释了为什么 IKKBZ 对树查询是多项式的，而对循环查询（含"非树"结构）只能使用启发式方法。</p>
+
+<hr>
+
+<!-- ================================================================== -->
+<h2 id="s6">6. 结论与评注 (§6)</h2>
+
+<h3>核心贡献总结</h3>
+
+<ol>
+  <li><strong>定义了一类问题</strong>：通过易验证的 ASI 和 SND 性质刻画，涵盖多个经典排序/调度问题。</li>
+  <li><strong>给出了统一算法</strong>：对串联-并联优先约束，所有满足 ASI+SND 的问题都可用同一算法在 O(n log n) 内求解。</li>
+  <li><strong>序数数据即足够</strong>：算法仅需偏好关系的序数信息（谁比谁优先），不需要具体的基数代价数值。</li>
+  <li><strong>受 Lawler 注记修正</strong>：仅 ASI 性质就足够了，SND 性质并非必要。</li>
+</ol>
+
+<h3>理论美学</h3>
+
+<div class="callout">
+<strong>这篇论文展示了调度理论中一种优美的数学结构：</strong>
+<ul>
+  <li><strong>API</strong>：无约束时，"全局最优 = 局部贪心"（Smith 1956）</li>
+  <li><strong>ASI</strong>：升级到子序列层面，允许我们处理优先约束</li>
+  <li><strong>SND</strong>：允许串联组件的独立优化</li>
+  <li><strong>可结合性</strong>：允许并联组件的独立优化</li>
+  <li><strong>串联-并联图</strong>：恰好是串联和并联的递归组合 → 分治算法的完美载体</li>
+</ul>
+这构成了一套完整的、自洽的代数体系。
+</div>
+
+<hr>
+
+<!-- ================================================================== -->
+<h2 id="summary">7. 总结：核心概念图谱</h2>
+
+<table>
+  <tr><th>概念</th><th>定义</th><th>作用</th><th>在 IKKBZ 中的对应</th></tr>
+  <tr>
+    <td><strong>API 性质</strong></td>
+    <td>i &lt; j ⇒ f(…i,j…) ≤ f(…j,i…)</td>
+    <td>无约束时可贪心排序</td>
+    <td>—（IKKBZ 总有约束）</td>
+  </tr>
+  <tr>
+    <td><strong>ASI 性质</strong></td>
+    <td>s &lt; t ⇒ f(…s,t…) ≤ f(…t,s…)</td>
+    <td>有约束时子序列可贪心排序</td>
+    <td><strong>Lemma 1</strong>，rank(U) ≤ rank(V)</td>
+  </tr>
+  <tr>
+    <td><strong>SND 性质</strong></td>
+    <td>f(s)≤f(t) ⇒ f(…s…)≤f(…t…)</td>
+    <td>串联组件独立优化</td>
+    <td>树中父子关系天然串联</td>
+  </tr>
+  <tr>
+    <td><strong>Job Module</strong></td>
+    <td>对外部"看起来一样"的节点集</td>
+    <td>可递归替换为 chain</td>
+    <td>join 树中的子树</td>
+  </tr>
+  <tr>
+    <td><strong>并联链算法</strong></td>
+    <td>合并冲突 → 按偏好归并</td>
+    <td>求解并联链模块</td>
+    <td><strong>OPT 的归一化步骤</strong></td>
+  </tr>
+  <tr>
+    <td><strong>串联-并联算法</strong></td>
+    <td>后序遍历分解树，P 归并 S 拼接</td>
+    <td>求解任意 SP 图</td>
+    <td><strong>OPT 算法整体框架</strong></td>
+  </tr>
+  <tr>
+    <td><strong>可结合性</strong></td>
+    <td>子问题最优 → 归并得全局最优</td>
+    <td>保证分治策略正确</td>
+    <td>相邻根变换 O(N²) 算法</td>
+  </tr>
+</table>
+
+<figure class="diagram">
+<svg width="680" height="320" viewBox="0 0 680 320">
+  <text x="340" y="22" text-anchor="middle" font-size="15" font-weight="600" fill="#333">概念层次关系</text>
+
+  <!-- Layer 1: Cost function -->
+  <rect x="240" y="40" width="200" height="36" rx="10" fill="#ddd6fe" stroke="#7c3aed" stroke-width="2"/>
+  <text x="340" y="63" text-anchor="middle" font-size="13" font-weight="600" fill="#5b21b6">代价函数 f (递归定义)</text>
+
+  <line x1="340" y1="76" x2="340" y2="100" stroke="#7c3aed" stroke-width="2"/>
+  <text x="410" y="93" font-size="10" fill="#7c3aed">满足</text>
+
+  <!-- Layer 2: Properties -->
+  <rect x="80" y="105" width="150" height="40" rx="8" fill="#fef3c7" stroke="#f59e0b" stroke-width="2"/>
+  <text x="155" y="122" text-anchor="middle" font-size="12" font-weight="600" fill="#92400e">API 性质</text>
+  <text x="155" y="138" text-anchor="middle" font-size="10" fill="#888">(Smith 1956)</text>
+
+  <rect x="280" y="105" width="150" height="40" rx="8" fill="#fef3c7" stroke="#f59e0b" stroke-width="2"/>
+  <text x="355" y="122" text-anchor="middle" font-size="12" font-weight="600" fill="#92400e">ASI 性质</text>
+  <text x="355" y="138" text-anchor="middle" font-size="10" fill="#888">升级到子序列层面</text>
+
+  <rect x="480" y="105" width="150" height="40" rx="8" fill="#fef3c7" stroke="#f59e0b" stroke-width="2"/>
+  <text x="555" y="122" text-anchor="middle" font-size="12" font-weight="600" fill="#92400e">SND 性质</text>
+  <text x="555" y="138" text-anchor="middle" font-size="10" fill="#888">串联分解</text>
+
+  <!-- Arrows from ASI to algorithms -->
+  <line x1="355" y1="145" x2="200" y2="185" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="4,2"/>
+  <line x1="355" y1="145" x2="500" y2="185" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="4,2"/>
+
+  <!-- Layer 3: Algorithms -->
+  <rect x="60" y="190" width="180" height="50" rx="10" fill="#ecfdf5" stroke="#10b981" stroke-width="2"/>
+  <text x="150" y="210" text-anchor="middle" font-size="12" font-weight="600" fill="#047857">并联链算法</text>
+  <text x="150" y="228" text-anchor="middle" font-size="10" fill="#666">Theorem 2, 3</text>
+
+  <rect x="420" y="190" width="180" height="50" rx="10" fill="#ecfdf5" stroke="#10b981" stroke-width="2"/>
+  <text x="510" y="210" text-anchor="middle" font-size="12" font-weight="600" fill="#047857">串联-并联算法</text>
+  <text x="510" y="228" text-anchor="middle" font-size="10" fill="#666">Theorem 5, 6</text>
+
+  <!-- Unification arrow -->
+  <line x1="240" y1="215" x2="418" y2="215" stroke="#10b981" stroke-width="2" marker-end="url(#asa)"/>
+
+  <!-- Layer 4: Constraint type -->
+  <rect x="200" y="270" width="250" height="36" rx="10" fill="#ddd6fe" stroke="#7c3aed" stroke-width="2"/>
+  <text x="325" y="290" text-anchor="middle" font-size="12" font-weight="600" fill="#5b21b6">串联-并联优先约束 → O(n log n)</text>
+  <text x="325" y="303" text-anchor="middle" font-size="10" fill="#888">树 ⊂ 串联-并联图（树是最简单的 SP 图）</text>
+</svg>
+<figcaption>图11：概念层次全景。从代价函数的递归定义出发，到 API/ASI/SND 性质，到并联链/串联-并联算法，最终统一处理所有串联-并联优先约束的排序问题。</figcaption>
+</figure>
+
+<hr>
+
+<div class="footnotes">
+  <p><strong>参考文献精要：</strong></p>
+  <ul>
+    <li><strong>[Smith 56]</strong> Smith, W. E. — API 性质的原始论文，无约束排序的奠基工作。</li>
+    <li><strong>[Lawler 78]</strong> Lawler, E. L. — 将并联链方法扩展到树约束，是 IKKBZ 引用的"O(N log N) per root"来源。</li>
+    <li><strong>[Abdel-Wahab &amp; Kameda 78]</strong> — 独立提出了类似的算法，针对最大累积代价问题。</li>
+    <li><strong>[Sidney 75, 76, 79]</strong> — Sidney 的系列工作，并联链分解和可结合性的早期版本。</li>
+    <li><strong>[Monma 78, 79]</strong> — Monma 的博士论文及后续，将框架推广到一般优先约束。</li>
+    <li><strong>[IKKBZ 86]</strong> — Krishnamurthy, Boral, Zaniolo — 将本文框架实例化到数据库 join 排序，即你已阅读的 IKKBZ 论文。</li>
+  </ul>
+</div>
+
+</body>
+</html>

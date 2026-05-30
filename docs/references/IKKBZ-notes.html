@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IKKBZ 论文笔记 — §4.4–6</title>
+<style>
+  :root {
+    --bg: #faf9f6;
+    --text: #1a1a1a;
+    --accent: #2563eb;
+    --border: #e0dcd0;
+    --code-bg: #f3f1eb;
+    --highlight: #fef9c3;
+    --muted: #6b6b6b;
+    --th-bg: #f0ede5;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "Noto Serif SC", "Source Han Serif SC", "STSong", "SimSun", Georgia, serif;
+    line-height: 1.85;
+    color: var(--text);
+    background: var(--bg);
+    max-width: 860px;
+    margin: 0 auto;
+    padding: 3rem 1.5rem 6rem;
+  }
+  h1 { font-size: 2rem; margin-bottom: 0.3rem; font-weight: 700; }
+  h2 {
+    font-size: 1.35rem; margin: 2.5rem 0 0.8rem;
+    padding-bottom: 0.35rem; border-bottom: 2px solid var(--accent);
+  }
+  h3 { font-size: 1.1rem; margin: 1.6rem 0 0.5rem; color: #333; }
+  h4 { font-size: 1rem; margin: 1.2rem 0 0.4rem; }
+  p { margin: 0.65rem 0; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .meta { color: var(--muted); font-size: 0.9rem; margin-bottom: 2rem; }
+
+  .callout {
+    border-left: 4px solid var(--accent);
+    background: #eef2ff;
+    padding: 0.7rem 1rem;
+    margin: 1rem 0;
+    border-radius: 0 6px 6px 0;
+    font-size: 0.95rem;
+  }
+  .callout.warn {
+    border-left-color: #f59e0b;
+    background: #fffbeb;
+  }
+  .callout.info {
+    border-left-color: #10b981;
+    background: #ecfdf5;
+  }
+
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.85rem 1rem;
+    overflow-x: auto;
+    font-family: "SF Mono", "Fira Code", "Consolas", "Noto Sans Mono CJK SC", monospace;
+    font-size: 0.88rem;
+    line-height: 1.55;
+    margin: 0.75rem 0;
+  }
+
+  code {
+    font-family: "SF Mono", "Fira Code", "Consolas", "Noto Sans Mono CJK SC", monospace;
+    font-size: 0.9em;
+    background: var(--code-bg);
+    padding: 0.1em 0.35em;
+    border-radius: 3px;
+  }
+  pre code { background: none; padding: 0; }
+
+  table {
+    border-collapse: collapse; width: 100%; margin: 1rem 0;
+    font-size: 0.92rem;
+  }
+  th, td {
+    border: 1px solid var(--border);
+    padding: 0.45rem 0.7rem;
+    text-align: left;
+  }
+  th { background: var(--th-bg); font-weight: 600; }
+
+  ul, ol { margin: 0.5rem 0 0.5rem 1.6rem; }
+  li { margin: 0.25rem 0; }
+
+  .toc { margin: 1.2rem 0 2rem; }
+  .toc li { margin: 0.15rem 0; }
+  .toc a { font-family: inherit; }
+
+  .algo-step {
+    margin: 0.3rem 0 0.3rem 1.2rem;
+    padding: 0.15rem 0;
+  }
+  .algo-step strong { color: var(--accent); }
+
+  hr { border: none; border-top: 1px solid var(--border); margin: 2.5rem 0; }
+
+  .tag {
+    display: inline-block;
+    background: #e0e7ff;
+    color: #3730a3;
+    font-size: 0.78rem;
+    padding: 0.15em 0.55em;
+    border-radius: 4px;
+    margin-right: 0.3rem;
+    font-family: sans-serif;
+  }
+
+  .footnotes { font-size: 0.85rem; color: var(--muted); border-top: 1px solid var(--border); padding-top: 1rem; margin-top: 3rem; }
+
+  @media (max-width: 600px) {
+    body { padding: 1.5rem 1rem 4rem; }
+    pre { font-size: 0.8rem; padding: 0.6rem 0.7rem; }
+  }
+</style>
+</head>
+<body>
+
+<h1>IKKBZ 论文笔记</h1>
+<p class="meta">
+  <strong>论文：</strong> Krishnamurthy, Boral, Zaniolo — <em>Optimization of Nonrecursive Queries</em>, VLDB 1986.<br>
+  <strong>重点关注：</strong> §4.4–6（算法、放宽假设、结论）<br>
+  <strong>日期：</strong> 2026-05-31
+</p>
+
+<nav>
+<ol class="toc">
+  <li><a href="#s4-recap">§4.1–4.3 回顾：假设、代价模型与示例</a></li>
+  <li><a href="#s4.4">§4.4 有根树查询的算法</a></li>
+  <li><a href="#s4.5">§4.5 树查询算法（全根遍历，O(N²)）</a></li>
+  <li><a href="#s5.1">§5.1 下推选择</a></li>
+  <li><a href="#s5.2">§5.2 容纳其他 Join 方法</a></li>
+  <li><a href="#s5.3">§5.3 LPT 查询优化</a></li>
+  <li><a href="#s5.4">§5.4 磁盘驻留数据库</a></li>
+  <li><a href="#s5.5">§5.5 优化循环查询</a></li>
+  <li><a href="#s6">§6 结论与关键洞见</a></li>
+  <li><a href="#summary">总结：需要记住的核心要点</a></li>
+</ol>
+</nav>
+
+<hr>
+
+<!-- ================================================================== -->
+<h2 id="s4-recap">1. §4.1–4.3 回顾：假设、代价模型与示例</h2>
+
+<p>既然你已经阅读过前面的背景内容，这里仅对 §4.4–4.5 所依赖的核心机制做简要回顾：</p>
+
+<h3>4.1 — 五条假设（均在 §5 中被放宽）</h3>
+<ol>
+  <li>查询 <strong>仅包含 join 谓词</strong>（不含 <code>R.a = constant</code> 这类选择谓词）。</li>
+  <li>每种 join 方法的代价均形如 <strong>n₁ · g(n₂)</strong> —— 即外层基数 × 内层"每元组微分代价"的线性形式。</li>
+  <li>执行空间限定为 <strong>PPT</strong>（完全流水线）或 <strong>BLPT</strong>（二叉线性，物化临时关系）。</li>
+  <li>数据库 <strong>完全驻留内存</strong>（代价 = 比较次数，而非 I/O）。</li>
+  <li>查询的 join 图是一棵 <strong>树</strong>（无环）。</li>
+</ol>
+
+<h3>4.2 — 递归代价函数与 Rank</h3>
+
+<p>对一个一致的 LPT 序列 <em>S</em>（尊重有根 join 树的偏序关系），代价递归定义如下：</p>
+
+<pre><code>C(Λ) = 0                          // 空序列
+C(Rⱼ) = 0  若 Rⱼ 为根, 否则 gⱼ(nⱼ)
+C(S₁S₂) = C(S₁) + T(S₁) · C(S₂)
+
+T(Λ) = 1
+T(S) = Π sᵢ · nᵢ   （序列中各关系 selectivity × 基数的连乘积）</code></pre>
+
+<p>此代价函数满足 <strong>相邻序列交换（ASI）</strong> 性质：</p>
+
+<div class="callout">
+<strong>引理 1.</strong> 对一致序列 A·U·V·B 与 A·V·U·B：<br>
+<code>C(AUVB) ≤ C(AVUB)</code> &nbsp;当且仅当&nbsp; <code>rank(U) ≤ rank(V)</code>，<br>
+其中 <strong>rank(S) = (T(S) − 1) / C(S)</strong>。
+</div>
+
+<p><strong>Rank 的直觉含义：</strong> 它度量的是 <em>单位微分 join 代价所产生的中间结果增长量</em>。Rank 越小，越应先 join。</p>
+
+<h3>4.3 — 示例（论文 Figure 3）</h3>
+
+<p>一个以 R₁ 为根的 5 关系 join 树。算法 <strong>自底向上</strong> 运作：</p>
+<ol>
+  <li>在每个叶子子树中，按 rank 升序排列子节点 → 形成一条<em>链</em>。</li>
+  <li><strong>合并</strong>兄弟链：按 rank 交错合并（类似合并有序列表）。</li>
+  <li><strong>归一化：</strong> 若链头的 rank &gt; 其直接后继的 rank，将它们合并为一个<em>复合节点</em>（因为在任何最优序中，不可能有其他节点插入到它们之间）。重新计算复合 rank。重复直至链按 rank 有序。</li>
+  <li>持续向上，直到整棵树变成一条链 → 该链<em>就是</em>最优 join 序。</li>
+</ol>
+
+<hr>
+
+<!-- ================================================================== -->
+<h2 id="s4.4">2. §4.4 — 有根树查询的算法</h2>
+
+<p><span class="tag">核心算法</span> <span class="tag">单根 O(N log N)</span></p>
+
+<h3>问题陈述</h3>
+<p>给定一棵<strong>有根</strong> join 树，找到一个使递归代价函数最小化的关系全序（一致的 LPT 序列）。该序列必须是有根树的拓扑排序 —— 子节点只能出现在其父节点之后。</p>
+
+<h3>OPT 算法</h3>
+
+<pre><code><strong>算法 OPT</strong>
+<strong>输入：</strong> 有根树查询 Q，以及每个节点的 T 和 C 值。
+<strong>输出：</strong> 该有根树的最优全序（最优 join 序列）。
+
+1. 若树已是单条链 → <strong>停止</strong>。
+2. 找一个子树（根为 r），其所有子节点都已是链。
+3. <strong>合并</strong>这些链，基于 rank 排序，使得结果单链
+   按 rank 非递减排列。
+4. <strong>归一化</strong>该子树的根 r（现在是一条单链）：
+   a. 当 rank(根) > rank(其直接后继 c) 时：
+        将根和 c 替换为一个新的复合节点，
+        表示子链（r 后跟 c）。
+        重新计算该复合节点的 T 和 C。
+5. 回到步骤 1。</code></pre>
+
+<h3>关键细节</h3>
+
+<h4>步骤 2 — 自底向上选择</h4>
+<p>算法总是选取一个其所有子节点<em>已是链</em>的子树。在叶子层，这显然成立（单个节点即是链）。随着算法向上推进，子树被转换为链，使其父节点能够被接着处理。</p>
+
+<h4>步骤 3 — 合并链</h4>
+<p>给定 <em>k</em> 条兄弟链，每条内部已按 rank 排序，将它们合并为一条按 rank 排序的单链 —— 完全等同于合并 <em>k</em> 个有序列表。由于 ASI 性质（引理 1），每条链内部的相对顺序得以保留，链间的交错仅由 rank 比较决定。</p>
+
+<h4>步骤 4 — 归一化（最关键的步骤）</h4>
+<p>合并后，根 <em>r</em> 位于链的头部（由于偏序约束，它<em>必须</em>在最前面）。但 <em>r</em> 的 rank 可能大于下一个节点 <em>c</em> 的 rank，这违反了 rank 有序的要求。</p>
+
+<div class="callout info">
+<strong>为什么可以把 r 和 c 合并为复合节点？</strong><br>
+若 rank(c) &lt; rank(r)，则在<em>任何</em>最优全序中，来自兄弟子树的节点都不能放在 r 和 c 之间。证明：若某个外部节点 x 被放在 r 和 c 之间，将 x 与 c 交换可降低代价（由 ASI 性质）。因此 r 和 c 是"粘在一起的"—— 它们可以作为一个原子单元继续参与后续计算。
+</div>
+
+<p>对于表示子链 (r, c) 的复合节点：</p>
+<pre><code>T(r∘c) = T(r) · T(c)
+C(r∘c) = C(r) + T(r) · C(c)
+rank(r∘c) = (T(r∘c) − 1) / C(r∘c)</code></pre>
+
+<p>步骤 4a 的 while 循环重复执行，直到链头的 rank ≤ 下一节点的 rank。此时该子树的归一化完成，它被父级视为一条单链。</p>
+
+<h4>步骤 5 — 迭代</h4>
+<p>循环持续向上推进。当整棵 join 树的根被处理完毕，得到的链（展开所有复合节点后）即为最优 join 序。</p>
+
+<h3>时间复杂度：O(N log N)</h3>
+<p>借助适当的数据结构（如优先队列用于合并），单棵有根树可在 O(N log N) 内完成 <a href="#ref-lawler">[Lawler 78]</a>。但由于需要尝试所有根（下一节），单根的复杂度并非瓶颈 —— 整体 O(N²) 才是主导项。</p>
+
+<hr>
+
+<!-- ================================================================== -->
+<h2 id="s4.5">3. §4.5 — 树查询算法（全根遍历）</h2>
+
+<p><span class="tag">核心贡献</span> <span class="tag">整体 O(N²)</span></p>
+
+<h3>问题</h3>
+<p>§4.4 解决了<em>单个</em>根的问题。要找到树查询的全局最优 join 序，必须考虑<strong>所有 N 种可能的根的选择</strong>，并从中选出代价最小的那个。</p>
+
+<p>朴素做法 —— 运行 OPT N 次 —— 代价为 O(N² log N)。本节将其改进为 <strong>O(N²)</strong>，核心观察是：相邻根的 OPT 结果共享大量计算。</p>
+
+<h3>核心洞见：相邻根变换</h3>
+
+<div class="callout">
+已知 join 树在根 <strong>r</strong> 下的最优 join 序，则同一棵树在<strong>相邻</strong>节点 <strong>a</strong>（a 是 r 的子节点）为根时的最优序可在 <strong>O(N)</strong> 时间内算出 —— 无需重新运行完整的 O(N log N) 算法。
+</div>
+
+<h3>变换过程（论文 Figure 4）</h3>
+
+<p>令 T<sub>r</sub> 为以 r 为根的 join 树，假设我们已有其最优全序。要计算 T<sub>a</sub>（以 r 的邻居 a 为根）的最优序：</p>
+
+<ol>
+  <li><strong>将 T<sub>r</sub> 的最优序重新表达</strong>为两个交错的子序列：
+    <ul>
+      <li><strong>a₁, a₂, …</strong> — 来自以 a 为根的子树的节点（保持该子树内的最优序）。</li>
+      <li><strong>b₁, b₂, …</strong> — 来自 r 的其他所有子树的节点（保持其最优序）。</li>
+    </ul>
+    此重组是对已有最优序的一趟 O(N) 扫描。
+  </li>
+  <li><strong>重新计算 r 的 rank</strong>，此时以 <em>a</em> 为其父节点（而非作为根无父节点）。在 T<sub>a</sub> 中，<em>a</em> 是根，<em>r</em> 现在是 <em>a</em> 的子节点。</li>
+  <li><strong>合并两条链</strong>到新根 <em>a</em> 下，基于 rank 排序。<em>a</em> 的子树（即原来的 a₁,a₂,…）与其余部分（r,b₁,b₂,…）现在成为 <em>a</em> 下的兄弟链。</li>
+</ol>
+
+<h3>为什么这样做是对的</h3>
+<p>关键观察：<strong>若一个节点在两次定根中父节点不变，则其 rank 不变</strong>。当我们将根从 r 切换到 a：</p>
+<ul>
+  <li>a 的子树中所有节点的父节点不变 → 它们的 rank 和相对顺序不变。</li>
+  <li>a 子树之外的所有节点的父节点（r）不变 → 它们的 rank 和相对顺序不变。</li>
+  <li>只有 <strong>r</strong> 有了新的父节点（现在是 a）→ 只需重新计算 r 的 rank。</li>
+  <li>只有 <strong>a</strong> 成为根 → 无论其 rank 如何，它必须在最前面。</li>
+</ul>
+
+<p>因此，只需 O(N) 的工作量：一次 rank 重算 + 一次两条有序链的合并。</p>
+
+<h3>整体算法</h3>
+<pre><code>1. 任选一个起始根 r₀。运行 OPT (O(N log N)) 得到其最优序。
+2. 遍历 join 树（例如 DFS）。对每条边 (u → v)：
+   a. 将 u-rooted 树的最优序变换为 v-rooted 树的最优序 (O(N))。
+   b. 记录代价。
+3. 遍历完所有 N 个节点后，选择代价最小的根。
+4. 总时间：O(N) · O(N) = <strong>O(N²)</strong>。</code></pre>
+
+<div class="callout info">
+<strong>为什么这很重要：</strong> 此前的最优方法（System R 风格）是 O(N!) 的穷举搜索。IKKBZ 将树查询的复杂度降至 O(N²) —— 使得包含数百个 join 的查询（如在演绎/知识库系统中）的优化变得可行。
+</div>
+
+<hr>
+
+<!-- ================================================================== -->
+<h2 id="s5.1">4. §5.1 — 下推选择</h2>
+
+<p>对关系进行预选择（在 join 前应用 <code>R.a = constant</code>）可以减少其基数，但会<strong>使原关系上的既有索引失效</strong>。优化器面临权衡：预选择但失去索引，或保留索引但对全关系做 join。</p>
+
+<p>论文认为这一选择与 join 序是<strong>正交的</strong>：对一棵给定的有根 join 树，是否对每个关系做预选择可以<em>独立于</em> join 序来决定，只需与 join 方法的选择协同考虑。join 序算法本身无需改变。</p>
+
+<hr>
+
+<!-- ================================================================== -->
+<h2 id="s5.2">5. §5.2 — 容纳其他 Join 方法</h2>
+
+<p><span class="tag">近似</span> <span class="tag">实用性</span></p>
+
+<p>有两种 join 方法因不符合 <strong>n₁ · g(n₂)</strong> 形式而被排除在原始代价模型之外：</p>
+
+<table>
+  <tr><th>方法</th><th>为何不符合</th><th>建议的修正</th></tr>
+  <tr>
+    <td><strong>Sort-Merge（排序归并）</strong></td>
+    <td>代价包含 n₁·log(n₁) + n₂·log(n₂) —— 对两个输入均非线性</td>
+    <td>将微分代价近似为常数，以此作为 g(n)。</td>
+  </tr>
+  <tr>
+    <td><strong>在临时关系上建索引</strong></td>
+    <td>"外层"关系被选择性访问，代价不是 n₁·g(n₂) 而是 g'(n₁)·n₂</td>
+    <td>做近似；选择一个符合 n₁·g(n₂) 形式的模型。</td>
+  </tr>
+</table>
+
+<div class="callout warn">
+<strong>核心哲学观点：</strong> 作者认为，既然 <em>selectivity 本身已是粗略估计</em>，对代价公式做简单近似就足够了。优化器的首要目标是<strong>避免最坏情况</strong>，而非追求完美的全局最优。对 g(n) 的合理近似仍能引导 rank 函数产生合理的 join 序。
+</div>
+
+<p><strong>关于内存驻留的注记：</strong> 若所有关系都在内存中，sort-merge <em>永远</em>没有优势 —— nested loop 或 selective access 始终更优。这在该时代的知识库应用场景中大大简化了问题。</p>
+
+<hr>
+
+<!-- ================================================================== -->
+<h2 id="s5.3">5. §5.3 — LPT 查询优化</h2>
+
+<p><span class="tag">PPT vs BLPT</span> <span class="tag">物化</span></p>
+
+<p>到目前为止，讨论仅限于 <strong>PPT</strong>（完全流水线）或 <strong>BLPT</strong>（每次 join 都物化临时关系）。这是 LPT 频谱的两个极端。问题是：<strong>什么时候需要物化临时关系？</strong></p>
+
+<h3>答案</h3>
+
+<div class="callout">
+<strong>当且仅当后续 join 操作需要时，才物化临时关系。</strong>
+</div>
+
+<p>具体而言：</p>
+<ul>
+  <li>若所有 join 都使用 <strong>nested loop 或 selective access</strong> → PPT（流水线）<em>永远</em>更优。物化只增加代价而无收益。</li>
+  <li>若某个 join 使用 <strong>sort-merge</strong> → 内层关系必须被排序，因此必须先物化。此时处理树变为 LPT（而非纯 PPT）。</li>
+</ul>
+
+<h3>扩展策略</h3>
+<ol>
+  <li>使用 §5.2 的近似方法处理 sort-merge 等 join 方法。</li>
+  <li>假设 PPT（完全流水线）计算最优<strong>全序</strong>。</li>
+  <li>后处理：对每个其 join 方法需要物化输入的关系，在处理树的对应位置<strong>插入物化步骤</strong>。</li>
+</ol>
+
+<p>这样，join 序算法保持不变，同时能处理一般 LPT。</p>
+
+<hr>
+
+<!-- ================================================================== -->
+<h2 id="s5.4">6. §5.4 — 磁盘驻留数据库</h2>
+
+<p><span class="tag">推广</span></p>
+
+<p>论文声称扩展到磁盘数据库在<strong>结构上是直接的</strong>。论证如下：</p>
+
+<ul>
+  <li>§4.2 的递归代价方程仅依赖于 LPT 执行类，<em>而不依赖</em>数据在内存还是磁盘上。</li>
+  <li>磁盘驻留情形仅改变了 <strong>g(n)</strong> 函数 —— 从比较次数变为页面访问次数。</li>
+  <li>这已被 <a href="#ref-ibaraki">[Ibaraki 84]</a> 证实：他们从基于磁盘的 I/O 模型出发，却推导出了<strong>结构完全相同</strong>的代价方程。</li>
+</ul>
+
+<p>切换到磁盘模型的间接影响：</p>
+<ul>
+  <li>Sort-merge 变得更重要（这印证了 §5.2 近似的必要性）。</li>
+  <li>代价估计从元组级转向块级。</li>
+  <li>但 <strong>rank 函数、ASI 性质和 OPT 算法完全不变</strong>。</li>
+</ul>
+
+<hr>
+
+<!-- ================================================================== -->
+<h2 id="s5.5">7. §5.5 — 优化循环查询</h2>
+
+<p><span class="tag">启发式</span> <span class="tag">NP-hard</span> <span class="tag">生成树</span></p>
+
+<h3>问题</h3>
+<p>对于含环的 join 图，优化问题是 <strong>NP-hard</strong> 的（<a href="#ref-ibaraki">[Ibaraki 84]</a> 在 PPT 空间上证明了这一点；推广到一般 LPT 是直接的）。因此（假设 P ≠ NP），不存在精确的多项式算法。需要一种启发式方法。</p>
+
+<h3>两个观察</h3>
+
+<div class="callout">
+<strong>观察 1（超集性质）：</strong> 对 join 图的<em>任一子图</em>执行查询，其结果都是原查询结果的<strong>超集</strong>。丢弃一个 join 谓词只会增加元组。
+</div>
+
+<div class="callout">
+<strong>观察 2（selectivity 的重要性）：</strong> selectivity 好（值小）的 join 比 selectivity 差（接近 1）的 join 对 join 序的决定作用更大。极限情况下，cross product（selectivity = 1）<em>不提供</em>任何有用的排序约束 —— 它应该尽可能晚做。
+</div>
+
+<h3>启发式方法：最小 Selectivity 生成树</h3>
+
+<pre><code>1. 从含环的 join 图中，选择一棵<strong>生成树</strong>，
+   使得其边上 selectivity 的<strong>乘积最小</strong>
+   （不是求和 —— 这是最小生成树的一个变种）。
+
+2. 在此生成树上运行 IKKZB O(N²) 算法，
+   计算出最优 join 序。
+
+3. 以此顺序执行原始（含环）查询。
+   额外的 join 谓词（生成树之外的边）
+   在执行过程中作为过滤器应用。</code></pre>
+
+<h3>为什么这是合理的</h3>
+<ul>
+  <li>selectivity 乘积最小的生成树，最小化了<strong>中间结果的基数</strong>（树查询的结果大小）。</li>
+  <li>这最小化了"浪费的工作"—— 树查询结果与最终（含环）查询结果之间的差距尽可能小。</li>
+  <li>selectivity 差（接近 1）的边类似于 cross product —— 它们几乎不提供排序指导，因此将其排除在生成树之外是正确的选择。</li>
+  <li>即使得到的顺序不是最优的，它<strong>保证避免最坏情况</strong>的执行 —— 与论文的格言一致。</li>
+</ul>
+
+<h3>生成树代价定义</h3>
+<p>与经典 MST（边权<em>求和</em>）不同，这里生成树的"代价"是其边上 selectivity 的<strong>乘积</strong>：</p>
+<pre><code>cost(生成树) = Π sₑ   对树中所有边 e</code></pre>
+<p>这等价于标准 MST：取 <strong>log(sₑ)</strong> 为边权并最小化和。</p>
+
+<hr>
+
+<!-- ================================================================== -->
+<h2 id="s6">8. §6 — 结论与关键洞见</h2>
+
+<h3>贡献总结</h3>
+
+<ol>
+  <li><strong>一个形式化的优化模型</strong>，捕获了多种已有方法（BLPT, PPT），并将<em>搜索空间</em>与<em>启发式规则</em>分离 —— 使每种方法所依赖的假设变得清晰。</li>
+  <li><strong>一个 O(N²) 的精确算法</strong>用于树查询，改进了从 <a href="#ref-ibaraki">[Ibaraki 84]</a> 引入的 O(N² log N) 版本，且远优于 System R 的 O(N!) 穷举搜索。</li>
+  <li><strong>扩展</strong>以处理选择下推、sort-merge join、一般 LPT、磁盘数据库和循环查询（通过生成树启发式）。</li>
+</ol>
+
+<h3>深层洞见</h3>
+
+<div class="callout">
+<strong>1. 微分代价是关键抽象。</strong><br>
+通过将 join 代价表达为 n₁·g(n₂) —— 对外层基数线性 —— 使每个关系的 join 方法选择<em>独立于 join 序</em>。这正是 rank 函数得以运作、多项式时间解法成为可能的根本原因。在作者看来，这是与传统方法<strong>最大的分歧点</strong>，也是实现高效优化的关键。
+</div>
+
+<div class="callout">
+<strong>2. 对内存驻留数据库，PPT 是最优的。</strong><br>
+无需 sort-merge 时，流水线执行（无物化）始终优于 BLPT。这已被实际系统（SQL/DS, QBE）验证，并对专家系统有启示：<strong>逐元组处理本质上并非性能问题</strong>，只要数据库能装入内存。
+</div>
+
+<div class="callout">
+<strong>3. 避免最坏情况，不要执着于全局最优。</strong><br>
+鉴于 selectivity 估计本身就不准确，优化器的首要职责是<strong>避免灾难性的执行计划</strong>。IKKBZ 算法对树查询保证了这一点，生成树启发式则将这一保证扩展到循环查询。
+</div>
+
+<div class="callout">
+<strong>4. LPT 执行空间并非终点。</strong><br>
+论文明确指出，一般处理树（PT，允许多个并发的临时关系）可能支持更多并行性 —— 这在 1986 年是一个开放的研究方向。
+</div>
+
+<hr>
+
+<!-- ================================================================== -->
+<h2 id="summary">9. 总结：需要记住的核心要点</h2>
+
+<table>
+  <tr><th>概念</th><th>一句话</th></tr>
+  <tr>
+    <td><strong>Rank</strong></td>
+    <td><code>rank(S) = (T(S) − 1) / C(S)</code> — rank 越小越先 join。度量"单位代价下的中间结果膨胀量"。</td>
+  </tr>
+  <tr>
+    <td><strong>ASI 性质</strong></td>
+    <td>局部的 rank 比较即可决定全局最优序 —— 代价函数是<em>相邻序列可交换</em>的。</td>
+  </tr>
+  <tr>
+    <td><strong>OPT（§4.4）</strong></td>
+    <td>自底向上：子树转链 → 按 rank 合并 → 归一化（根与子节点 rank 倒挂时合并） → 重复。</td>
+  </tr>
+  <tr>
+    <td><strong>O(N²)（§4.5）</strong></td>
+    <td>从节点 u 换根到相邻节点 v 仅需 O(N)，因为只有一个节点的 rank 改变了。遍历全部 N 个根 → O(N²)。</td>
+  </tr>
+  <tr>
+    <td><strong>Join 方法（§5.2）</strong></td>
+    <td>任何方法都可用近似套入 n₁·g(n₂) 形式。精度不必完美 —— selectivity 本身已是估计值。</td>
+  </tr>
+  <tr>
+    <td><strong>物化（§5.3）</strong></td>
+    <td>仅当后续 join <em>需要</em>时才物化（如 sort-merge）。否则全部流水线执行。</td>
+  </tr>
+  <tr>
+    <td><strong>循环查询（§5.5）</strong></td>
+    <td>选一棵 selectivity 乘积最小的生成树，在其上运行 IKKBZ，其余 join 谓词作为过滤器应用。NP-hard → 启发式是必要的。</td>
+  </tr>
+</table>
+
+<hr>
+
+<div class="footnotes">
+  <p><strong>论文引用的参考文献：</strong></p>
+  <ul>
+    <li id="ref-ibaraki">[Ibaraki 84] Ibaraki, T., and Kameda, T. <em>Optimal nesting for Computing N-relational Joins</em>, TODS 9, 3 (1984), 482–502.</li>
+    <li id="ref-lawler">[Lawler 78] Lawler, E.L. <em>Sequencing jobs to minimize total weighted completion time subject to precedence constraints</em>, Ann. Discrete Math. 2 (1978), 75–90.</li>
+    <li id="ref-monma">[Monma 79] Monma, C.L., and Sidney, J.B. <em>Sequencing with series-parallel precedence constraints</em>, Math. Oper. Res. 4 (1979), 215–224.</li>
+    <li id="ref-sellinger">[Sellinger 79] Sellinger, P.G. et al. <em>Access Path Selection in a Relational Database Management System</em>, SIGMOD 1979.</li>
+  </ul>
+</div>
+
+</body>
+</html>
